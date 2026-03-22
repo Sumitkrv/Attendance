@@ -1,0 +1,33 @@
+version: '3.9'
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: attendance-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build:
+      context: ./backend
+    container_name: attendance-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017
+      - MONGODB_DB=face_attendance
+      - ALLOWED_ORIGINS=http://localhost:5001
+    volumes:
+      - ./backend/dataset:/app/dataset
+      - ./backend/models:/app/models
+    ports:
+      - "5001:5001"
+    depends_on:
+      - mongodb
+
+volumes:
+  mongo_data:
