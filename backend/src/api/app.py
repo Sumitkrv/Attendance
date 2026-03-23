@@ -2125,6 +2125,37 @@ def register_employee():
 
         saved_files.append(str(target))
 
+    # Ensure images are not only detectable, but also encodable for model training.
+    # This prevents enroll-success + train-fail loops when blurry/low-detail frames are captured.
+    if len(saved_files) > 0:
+        encodable_files = []
+        for path_str in list(saved_files):
+            path_obj = Path(path_str)
+            try:
+                img = face_recognition.load_image_file(str(path_obj))
+                enc = face_recognition.face_encodings(img, num_jitters=1, model="small")
+                if len(enc) < 1:
+                    path_obj.unlink(missing_ok=True)
+                    skipped_files.append(
+                        {
+                            "file": path_obj.name,
+                            "reason": "Face not encodable. Capture a clearer front-facing image.",
+                        }
+                    )
+                    continue
+                encodable_files.append(path_str)
+            except Exception:
+                path_obj.unlink(missing_ok=True)
+                skipped_files.append(
+                    {
+                        "file": path_obj.name,
+                        "reason": "Face encoding failed. Capture again in better lighting.",
+                    }
+                )
+                continue
+
+        saved_files = encodable_files
+
     existing = db.employees.find_one({"name": folder_name})
     credentials_only_enrollment = len(saved_files) == 0 and allow_credentials_only_enrollment and not require_face_images
 
@@ -2132,7 +2163,7 @@ def register_employee():
         return (
             jsonify(
                 {
-                    "message": "No valid face image found. Capture again with clear single face.",
+                    "message": "No valid face encodings found. Capture again with clear front-facing face and better lighting.",
                     "skipped": skipped_files,
                 }
             ),
