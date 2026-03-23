@@ -42,9 +42,20 @@ class FaceRecognizer:
         self.scan_edge_margin_ratio = max(0.0, env_float("SCAN_EDGE_MARGIN_RATIO", 0.02))
         self.scan_expected_tolerance = env_float("SCAN_EXPECTED_TOLERANCE", 0.58)
         self.scan_expected_margin = env_float("SCAN_EXPECTED_MARGIN", 0.03)
+        self.liveness_movement_min_pixels_floor = max(1, env_int("LIVENESS_MOVEMENT_MIN_PIXELS", 3))
+        self.liveness_movement_min_frames = max(2, env_int("LIVENESS_MOVEMENT_MIN_FRAMES", 4))
+        self.liveness_movement_min_span_pixels = max(
+            2,
+            env_int(
+                "LIVENESS_MOVEMENT_MIN_SPAN_PIXELS",
+                max(8, self.liveness_movement_min_pixels_floor * 2),
+            ),
+        )
         self.guard = LivenessAndSpoofGuard(
             blink_consec_frames=max(1, env_int("LIVENESS_BLINK_CONSEC_FRAMES", 1)),
-            movement_min_pixels=max(1, env_int("LIVENESS_MOVEMENT_MIN_PIXELS", 3)),
+            movement_min_pixels=self.liveness_movement_min_pixels_floor,
+            movement_min_frames=self.liveness_movement_min_frames,
+            movement_min_span_pixels=self.liveness_movement_min_span_pixels,
             min_laplacian_var=env_float("LIVENESS_MIN_LAPLACIAN_VAR", 55.0),
         )
 
@@ -120,6 +131,8 @@ class FaceRecognizer:
             "scan_expected_margin": self.scan_expected_margin,
             "blink_consec_frames": self.guard.blink_consec_frames,
             "movement_min_pixels": self.guard.movement_min_pixels,
+            "movement_min_frames": self.guard.movement_min_frames,
+            "movement_min_span_pixels": self.guard.movement_min_span_pixels,
             "min_laplacian_var": self.guard.min_laplacian_var,
         }
 
@@ -156,7 +169,11 @@ class FaceRecognizer:
         if "blink_consec_frames" in payload:
             self.guard.blink_consec_frames = max(1, int(payload["blink_consec_frames"]))
         if "movement_min_pixels" in payload:
-            self.guard.movement_min_pixels = max(1, int(payload["movement_min_pixels"]))
+            self.guard.movement_min_pixels = max(self.liveness_movement_min_pixels_floor, int(payload["movement_min_pixels"]))
+        if "movement_min_frames" in payload:
+            self.guard.movement_min_frames = max(self.liveness_movement_min_frames, int(payload["movement_min_frames"]))
+        if "movement_min_span_pixels" in payload:
+            self.guard.movement_min_span_pixels = max(self.liveness_movement_min_span_pixels, int(payload["movement_min_span_pixels"]))
         if "min_laplacian_var" in payload:
             self.guard.min_laplacian_var = float(payload["min_laplacian_var"])
 

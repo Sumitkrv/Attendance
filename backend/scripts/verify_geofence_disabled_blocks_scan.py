@@ -1,8 +1,11 @@
 import json
+import os
 import urllib.error
 import urllib.request
 
 BASE = "http://127.0.0.1:5001"
+REG_LOGIN_ID = str(os.getenv("REGRESSION_USER_LOGIN_ID", "") or "").strip().lower()
+REG_PASSWORD = str(os.getenv("REGRESSION_USER_PASSWORD", "") or "")
 
 
 def req(path, method="GET", payload=None, token=None):
@@ -49,19 +52,10 @@ def main():
         token=admin_token,
     )
 
-    # get sumit login details
-    s, employees = req("/employees", token=admin_token)
-    rows = employees if isinstance(employees, list) else employees.get("employees", [])
-    sumit = next((x for x in rows if str(x.get("name", "")).lower() == "sumit"), None)
-    if not sumit:
-        raise SystemExit("sumit user not found")
+    if not REG_LOGIN_ID or not REG_PASSWORD:
+        raise SystemExit("Set REGRESSION_USER_LOGIN_ID and REGRESSION_USER_PASSWORD for this script")
 
-    login_id = sumit.get("login_id")
-    password = sumit.get("password_visible_for_admin")
-    if not password:
-        raise SystemExit("sumit password visible field is blank; cannot auto-login test")
-
-    s, user = req("/user/login", method="POST", payload={"login_id": login_id, "password": password})
+    s, user = req("/user/login", method="POST", payload={"login_id": REG_LOGIN_ID, "password": REG_PASSWORD})
     if s != 200:
         raise SystemExit(f"user login failed: {s} {user}")
     user_token = user.get("token")

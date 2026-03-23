@@ -9,6 +9,25 @@ services:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1 >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: attendance-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   backend:
     build:
@@ -21,6 +40,9 @@ services:
       - MONGODB_URI=mongodb://mongodb:27017
       - MONGODB_DB=face_attendance
       - ALLOWED_ORIGINS=http://localhost:5001
+      - RATE_LIMIT_STORAGE_URI=redis://redis:6379/0
+      # Set via secret manager / runtime env in real deployments
+      - SENTRY_DSN=
     volumes:
       - ./backend/dataset:/app/dataset
       - ./backend/models:/app/models
@@ -28,6 +50,25 @@ services:
       - "5001:5001"
     depends_on:
       - mongodb
+      - redis
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/ready', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: attendance-uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - uptime_kuma_data:/app/data
+    depends_on:
+      - backend
 
 volumes:
   mongo_data:
+  uptime_kuma_data:

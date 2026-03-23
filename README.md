@@ -222,6 +222,55 @@ Default rule:
 - Keep `MAX_CONTENT_LENGTH_MB` low for upload abuse control
 - Run behind HTTPS reverse proxy
 - Use managed MongoDB with backups + network policy
+- Store all production secrets in a secret manager (not in committed env files)
+
+### Infra hardening knobs
+
+- Rate limiter backend (Redis):
+  - `RATE_LIMIT_STORAGE_URI=redis://<redis-host>:6379/0`
+- Sentry monitoring:
+  - `SENTRY_DSN=<dsn>`
+  - `SENTRY_TRACES_SAMPLE_RATE=0.1`
+- Health endpoints:
+  - `GET /health` (liveness + dependency details)
+  - `GET /ready` (readiness, returns 503 if critical deps fail)
+
+### Mongo backup/restore preflight
+
+Run before release:
+
+```bash
+cd backend
+PYTHONPATH=. .venv/bin/python scripts/mongo_backup_restore_check.py
+```
+
+This verifies:
+- `mongodump` installed
+- `mongorestore` installed
+- Mongo ping connectivity
+
+If command checks fail, install MongoDB Database Tools on the host running backups.
+
+## 10.1) Release Regression Gate (run before every deploy)
+
+Run this API suite against your running backend (dev/staging/prod):
+
+```bash
+cd backend
+export REGRESSION_USER_LOGIN_ID=<known_user_login_id>
+export REGRESSION_USER_PASSWORD=<known_user_password>
+# optional: force mismatch user
+# export REGRESSION_MISMATCH_USER_LOGIN_ID=<second_user_login_id>
+PYTHONPATH=. .venv/bin/python scripts/release_regression_suite.py
+```
+
+The suite verifies:
+- user login + token/session expiry policy
+- geofence OFF blocks attendance scan
+- geofence ON + changed office location behavior
+- face mismatch rejection
+
+The script returns non-zero exit code if any regression fails.
 
 ## 11) Docker Setup
 

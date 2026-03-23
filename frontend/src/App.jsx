@@ -6,6 +6,9 @@ const ADMIN_KEY = 'fa_admin_token'
 const USER_KEY = 'fa_user_token'
 const USER_ATTENDANCE_CACHE_KEY = 'fa_user_attendance_cache'
 const UI_THEME_KEY = 'fa_ui_theme'
+const SESSION_REFRESH_CHECK_MS = 60 * 1000
+const SESSION_REFRESH_BEFORE_MS = 15 * 60 * 1000
+const SESSION_EXPIRING_SOON_MS = 5 * 60 * 1000
 
 function readDarkModePreference() {
   try {
@@ -70,6 +73,46 @@ function decodeToken(token) {
   }
 }
 
+function tokenRemainingMs(token) {
+  const payload = decodeToken(token || '')
+  const expSec = Number(payload?.exp || 0)
+  if (!Number.isFinite(expSec) || expSec <= 0) return 0
+  return Math.max(0, (expSec * 1000) - Date.now())
+}
+
+function readValidToken(storageKey, expectedRole) {
+  try {
+    const token = localStorage.getItem(storageKey) || ''
+    if (!token) return ''
+    const payload = decodeToken(token)
+    if (!payload) {
+      localStorage.removeItem(storageKey)
+      return ''
+    }
+    if (String(payload.role || '').toLowerCase() !== String(expectedRole || '').toLowerCase()) {
+      localStorage.removeItem(storageKey)
+      return ''
+    }
+    if (tokenRemainingMs(token) <= 0) {
+      localStorage.removeItem(storageKey)
+      return ''
+    }
+    return token
+  } catch {
+    return ''
+  }
+}
+
+function isRetryableError(err) {
+  const text = String(err?.message || '').toLowerCase()
+  return !!err?.retryable
+    || text.includes('temporarily unavailable')
+    || text.includes('try again')
+    || text.includes('unable to reach server')
+    || text.includes('timed out')
+    || text.includes('network')
+}
+
 function LoginCard({ title, fields, onSubmit, message }) {
   const [loading, setLoading] = useState(false)
   const [values, setValues] = useState(() => Object.fromEntries(fields.map((f) => [f.name, f.defaultValue || ''])))
@@ -110,9 +153,13 @@ function AdminPage() {
   const navigate = useNavigate()
   const ENROLLMENT_IMAGE_COUNT = 10
   const [darkMode, setDarkMode] = useState(readDarkModePreference)
-  const [token, setToken] = useState(localStorage.getItem(ADMIN_KEY) || '')
+  const [token, setToken] = useState(() => readValidToken(ADMIN_KEY, 'admin'))
+  const [sessionRefreshedAt, setSessionRefreshedAt] = useState(null)
+  const [sessionExpiringSoon, setSessionExpiringSoon] = useState('')
   const [username, setUsername] = useState('admin')
   const [error, setError] = useState('')
+  const [retryLabel, setRetryLabel] = useState('')
+  const [retryAction, setRetryAction] = useState(null)
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const [date, setDate] = useState(formatDateInput())
@@ -186,6 +233,12 @@ function AdminPage() {
   const enrollmentVideoRef = useRef(null)
   const enrollmentCanvasRef = useRef(null)
   const enrollmentStreamRef = useRef(null)
+  const adminRefreshInFlightRef = useRef(false)
+
+  function clearRetryAction() {
+    setRetryAction(null)
+    setRetryLabel('')
+  }
 
   const counts = useMemo(() => {
     const checkedOut = attendance.filter((a) => !!a.check_out).length
@@ -625,8 +678,13 @@ function AdminPage() {
       setCameraStatus(cam)
       setTrainStatus(train)
       setSettingsLastUpdated(new Date())
+      clearRetryAction()
     } catch (err) {
       setError(err.message)
+      if (isRetryableError(err)) {
+        setRetryLabel('Retry loading dashboard')
+        setRetryAction(() => () => loadAll())
+      }
       if (String(err.message).toLowerCase().includes('invalid token')) {
         logout()
       }
@@ -680,8 +738,13 @@ function AdminPage() {
       setToken(data.token)
       setUsername(values.username)
       setMessage('Login successful')
+      clearRetryAction()
     } catch (err) {
       setError(err.message)
+      if (isRetryableError(err)) {
+        setRetryLabel('Retry login')
+        setRetryAction(() => () => handleLogin(values))
+      }
     }
   }
 
@@ -689,7 +752,72 @@ function AdminPage() {
     stopEnrollmentCamera()
     localStorage.removeItem(ADMIN_KEY)
     setToken('')
+    clearRetryAction()
   }
+
+  useEffect(() => {
+    if (!token) return
+    const claims = decodeToken(token)
+    if (!claims || String(claims.role || '').toLowerCase() !== 'admin' || tokenRemainingMs(token) <= 0) {
+      logout()
+      setError('Session invalid. Please login again.')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token])
+
+  async function refreshAdminSessionIfNeeded(nextToken = token) {
+    if (!nextToken) return
+    if (adminRefreshInFlightRef.current) return
+    const remaining = tokenRemainingMs(nextToken)
+    if (remaining > SESSION_REFRESH_BEFORE_MS) return
+
+    adminRefreshInFlightRef.current = true
+    try {
+      const data = await apiFetch('/auth/refresh_admin', { method: 'POST' }, nextToken)
+      const newToken = String(data?.token || '')
+      if (newToken && newToken !== nextToken) {
+        localStorage.setItem(ADMIN_KEY, newToken)
+        setToken(newToken)
+        setSessionRefreshedAt(Date.now())
+      }
+    } catch (err) {
+      const text = String(err?.message || '').toLowerCase()
+      if (text.includes('invalid token') || text.includes('please log in again') || text.includes('unauthorized')) {
+        logout()
+      }
+    } finally {
+      adminRefreshInFlightRef.current = false
+    }
+  }
+
+  useEffect(() => {
+    if (!token) return undefined
+    refreshAdminSessionIfNeeded(token)
+    const id = setInterval(() => {
+      refreshAdminSessionIfNeeded(token)
+    }, SESSION_REFRESH_CHECK_MS)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token])
+
+  useEffect(() => {
+    if (!token) {
+      setSessionExpiringSoon('')
+      return undefined
+    }
+    const apply = () => {
+      const remainingMs = tokenRemainingMs(token)
+      if (remainingMs > 0 && remainingMs <= SESSION_EXPIRING_SOON_MS) {
+        const mins = Math.max(1, Math.ceil(remainingMs / 60000))
+        setSessionExpiringSoon(`Session expiring soon (${mins} min left)`)
+      } else {
+        setSessionExpiringSoon('')
+      }
+    }
+    apply()
+    const id = setInterval(apply, SESSION_REFRESH_CHECK_MS)
+    return () => clearInterval(id)
+  }, [token])
 
   function flash(msg) {
     setMessage(msg)
@@ -1271,6 +1399,10 @@ function AdminPage() {
                 <h2>Admin Dashboard</h2>
                 <p className="muted">Workforce Attendance Management</p>
                 <p className="muted small">Admin: <strong>{username}</strong></p>
+                <p className="muted small">
+                  Session auto-refresh: {sessionRefreshedAt ? `Last refresh at ${new Date(sessionRefreshedAt).toLocaleTimeString()}` : 'Enabled (waiting for next cycle)'}
+                </p>
+                {!!sessionExpiringSoon && <p className="error">{sessionExpiringSoon}</p>}
                 <div className="admin-status-badges">
                   <span className={`status-badge ${cameraStatus?.running ? 'ok' : ''}`}>
                     Camera: {cameraStatus?.running ? 'Active' : 'Stopped'}
@@ -1289,7 +1421,14 @@ function AdminPage() {
           )}
 
           {!!message && <div className="success">{message}</div>}
-          {!!error && <div className="error">{error}</div>}
+          {!!error && (
+            <div className="error row between">
+              <span>{error}</span>
+              {!!retryAction && (
+                <button type="button" className="ghost" onClick={retryAction}>{retryLabel || 'Retry'}</button>
+              )}
+            </div>
+          )}
 
           {view === 'overview' && (
             <>
@@ -1531,7 +1670,7 @@ function AdminPage() {
                       </button>
                     </th>
                     <th>Status</th>
-                    <th>Password</th>
+                    <th>Password Status</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
@@ -1566,13 +1705,11 @@ function AdminPage() {
                       </td>
                       <td>
                         {(() => {
-                          const rawPassword = String(e.password_visible_for_admin || '').trim()
-                          const hasPassword = !!rawPassword && rawPassword !== '-'
-                          const shownPassword = hasPassword ? rawPassword : '-'
+                          const mustChangePassword = !!e.must_change_password
 
                           return (
                             <div className="row compact">
-                              <span>{shownPassword}</span>
+                              <span>{mustChangePassword ? 'Reset required' : 'Protected'}</span>
                             </div>
                           )
                         })()}
@@ -2220,10 +2357,14 @@ function AdminPage() {
 }
 
 function UserPage() {
-  const cachedAttendance = readAttendanceCache(localStorage.getItem(USER_KEY) || '')
+  const cachedAttendance = readAttendanceCache(readValidToken(USER_KEY, 'user'))
   const [darkMode, setDarkMode] = useState(readDarkModePreference)
-  const [token, setToken] = useState(localStorage.getItem(USER_KEY) || '')
+  const [token, setToken] = useState(() => readValidToken(USER_KEY, 'user'))
+  const [sessionRefreshedAt, setSessionRefreshedAt] = useState(null)
+  const [sessionExpiringSoon, setSessionExpiringSoon] = useState('')
   const [error, setError] = useState('')
+  const [retryLabel, setRetryLabel] = useState('')
+  const [retryAction, setRetryAction] = useState(null)
   const [message, setMessage] = useState('')
   const [employee, setEmployee] = useState(null)
   const [attendanceState, setAttendanceState] = useState(cachedAttendance.status || '')
@@ -2255,6 +2396,12 @@ function UserPage() {
   const manualCanvasRef = useRef(null)
   const manualStreamRef = useRef(null)
   const scanInFlightRef = useRef(false)
+  const userRefreshInFlightRef = useRef(false)
+
+  function clearRetryAction() {
+    setRetryAction(null)
+    setRetryLabel('')
+  }
 
   async function attachManualStreamPreview() {
     const video = manualVideoRef.current
@@ -2293,8 +2440,13 @@ function UserPage() {
       setAttendanceTimes({ checkIn: cached.checkIn || '', checkOut: cached.checkOut || '' })
       setStatus('Login successful')
       setMessage('Authenticated')
+      clearRetryAction()
     } catch (err) {
       setError(err.message)
+      if (isRetryableError(err)) {
+        setRetryLabel('Retry login')
+        setRetryAction(() => () => login(values))
+      }
     }
   }
 
@@ -2314,8 +2466,10 @@ function UserPage() {
         checkIn: nextTimes.checkIn,
         checkOut: nextTimes.checkOut,
       })
+      clearRetryAction()
     } catch {
-      // silent: keep UI stable if endpoint fails temporarily
+      setRetryLabel('Retry attendance status')
+      setRetryAction(() => () => refreshTodayAttendance(nextToken))
     }
   }
 
@@ -2341,6 +2495,16 @@ function UserPage() {
 
   useEffect(() => {
     initFromToken()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token])
+
+  useEffect(() => {
+    if (!token) return
+    const claims = decodeToken(token)
+    if (!claims || String(claims.role || '').toLowerCase() !== 'user' || tokenRemainingMs(token) <= 0) {
+      logout()
+      setError('Session invalid. Please login again.')
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
@@ -2558,6 +2722,7 @@ function UserPage() {
       setStatus(text)
       setMessage('Attendance processed')
       setError('')
+      clearRetryAction()
       if (['checked_in', 'checked_out', 'already_recorded'].includes(String(data.status || ''))) {
         const title = data.status === 'already_recorded' ? 'Already Marked' : 'Attendance Marked'
         showPopup('success', title, text)
@@ -2566,6 +2731,10 @@ function UserPage() {
       }
     } catch (err) {
       setError(err.message)
+      if (isRetryableError(err)) {
+        setRetryLabel('Retry attendance scan')
+        setRetryAction(() => () => checkInNow(silent))
+      }
       if (!silent) {
         showPopup('error', 'Scan Failed', err.message)
       }
@@ -2682,7 +2851,67 @@ function UserPage() {
     setAttendanceTimes({ checkIn: '', checkOut: '' })
     setStatus('Logged out')
     setChallengeInstruction('')
+    clearRetryAction()
   }
+
+  useEffect(() => {
+    if (!token) {
+      setSessionExpiringSoon('')
+      return undefined
+    }
+    const apply = () => {
+      const remainingMs = tokenRemainingMs(token)
+      if (remainingMs > 0 && remainingMs <= SESSION_EXPIRING_SOON_MS) {
+        const mins = Math.max(1, Math.ceil(remainingMs / 60000))
+        setSessionExpiringSoon(`Session expiring soon (${mins} min left)`)
+      } else {
+        setSessionExpiringSoon('')
+      }
+    }
+    apply()
+    const id = setInterval(apply, SESSION_REFRESH_CHECK_MS)
+    return () => clearInterval(id)
+  }, [token])
+
+  async function refreshUserSessionIfNeeded(nextToken = token) {
+    if (!nextToken) return
+    if (userRefreshInFlightRef.current) return
+    const remaining = tokenRemainingMs(nextToken)
+    if (remaining > SESSION_REFRESH_BEFORE_MS) return
+
+    userRefreshInFlightRef.current = true
+    try {
+      const data = await apiFetch('/auth/refresh_user', { method: 'POST' }, nextToken)
+      const newToken = String(data?.token || '')
+      if (newToken && newToken !== nextToken) {
+        localStorage.setItem(USER_KEY, newToken)
+        setToken(newToken)
+        setSessionRefreshedAt(Date.now())
+        writeAttendanceCache(newToken, {
+          status: String(attendanceState || '').toLowerCase(),
+          checkIn: attendanceTimes.checkIn || '',
+          checkOut: attendanceTimes.checkOut || '',
+        })
+      }
+    } catch (err) {
+      const text = String(err?.message || '').toLowerCase()
+      if (text.includes('invalid token') || text.includes('please log in again') || text.includes('unauthorized')) {
+        logout()
+      }
+    } finally {
+      userRefreshInFlightRef.current = false
+    }
+  }
+
+  useEffect(() => {
+    if (!token) return undefined
+    refreshUserSessionIfNeeded(token)
+    const id = setInterval(() => {
+      refreshUserSessionIfNeeded(token)
+    }, SESSION_REFRESH_CHECK_MS)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, attendanceState, attendanceTimes.checkIn, attendanceTimes.checkOut])
 
   if (!token) {
     return (
@@ -2731,6 +2960,10 @@ function UserPage() {
         </div>
         <div className="attendance-topbar-right">
           <p className="muted small">Name: {employee?.name || '-'} • Username: {employee?.login_id || '-'}</p>
+          <p className="muted small">
+            Session auto-refresh: {sessionRefreshedAt ? `Last refresh at ${new Date(sessionRefreshedAt).toLocaleTimeString()}` : 'Enabled (waiting for next cycle)'}
+          </p>
+          {!!sessionExpiringSoon && <p className="error">{sessionExpiringSoon}</p>}
           <div className="attendance-status-badges">
             <span className={`status-badge ${cameraOn ? 'ok' : ''}`}>Camera: {cameraOn ? 'Ready' : 'Off'}</span>
             <span className={`status-badge ${geofenceDisabled ? '' : (locationReady ? 'ok' : '')}`}>
@@ -2792,7 +3025,14 @@ function UserPage() {
               <p className="muted small">Location: {geo.lat && geo.lng ? `${Number(geo.lat).toFixed(5)}, ${Number(geo.lng).toFixed(5)} (±${Math.round(Number(geo.accuracy || 0))}m)` : 'Not captured'}</p>
             </div>
 
-            {!!error && <div className="error">{error}</div>}
+            {!!error && (
+              <div className="error row between">
+                <span>{error}</span>
+                {!!retryAction && (
+                  <button type="button" className="ghost" onClick={retryAction}>{retryLabel || 'Retry'}</button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="attendance-right-column">
@@ -2919,12 +3159,42 @@ function UserPage() {
   )
 }
 
+function RoleRouteGuard({ storageKey, role, children }) {
+  const rawToken = (() => {
+    try {
+      return localStorage.getItem(storageKey) || ''
+    } catch {
+      return ''
+    }
+  })()
+  const validToken = readValidToken(storageKey, role)
+
+  if (rawToken && !validToken) {
+    return <Navigate to={role === 'admin' ? '/admin' : '/user'} replace />
+  }
+  return children
+}
+
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/admin" replace />} />
-      <Route path="/admin" element={<AdminPage />} />
-      <Route path="/user" element={<UserPage />} />
+      <Route
+        path="/admin"
+        element={(
+          <RoleRouteGuard storageKey={ADMIN_KEY} role="admin">
+            <AdminPage />
+          </RoleRouteGuard>
+        )}
+      />
+      <Route
+        path="/user"
+        element={(
+          <RoleRouteGuard storageKey={USER_KEY} role="user">
+            <UserPage />
+          </RoleRouteGuard>
+        )}
+      />
       <Route path="*" element={<Navigate to="/admin" replace />} />
     </Routes>
   )

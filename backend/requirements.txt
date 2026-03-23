@@ -9,3 +9,5 @@ mongomock==4.1.2
 python-dotenv==1.0.1
 PyJWT==2.9.0
 gunicorn==22.0.0
+redis==5.0.8
+sentry-sdk[flask]==2.13.0

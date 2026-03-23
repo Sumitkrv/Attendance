@@ -5,10 +5,14 @@ import random
 import shutil
 import threading
 import uuid
+import time
+import json
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from bson import json_util
 from typing import Optional
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -20,6 +24,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
+from werkzeug.exceptions import HTTPException
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from src.attendance.attendance_manager import AttendanceManager
@@ -27,8 +32,11 @@ from src.recognize_faces import FaceRecognizer
 from src.security import (
     admin_auth_required,
     build_password_hash,
+    get_token_policy,
     issue_admin_token,
     issue_user_token,
+    refresh_admin_token,
+    refresh_user_token,
     user_auth_required,
     verify_admin_credentials,
 )
@@ -40,6 +48,18 @@ try:
     import mongomock
 except Exception:
     mongomock = None
+
+try:
+    import redis
+except Exception:
+    redis = None
+
+try:
+    import sentry_sdk
+    from sentry_sdk.integrations.flask import FlaskIntegration
+except Exception:
+    sentry_sdk = None
+    FlaskIntegration = None
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
@@ -81,6 +101,75 @@ def _load_environment():
 APP_ENV, LOADED_ENV_FILE = _load_environment()
 
 
+class JsonLogFormatter(logging.Formatter):
+    def format(self, record):
+        payload = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        for key in (
+            "event",
+            "request_id",
+            "method",
+            "path",
+            "status",
+            "duration_ms",
+            "remote_addr",
+            "app_env",
+        ):
+            val = getattr(record, key, None)
+            if val is not None:
+                payload[key] = val
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _setup_logging():
+    root = logging.getLogger()
+    if root.handlers:
+        for h in root.handlers:
+            h.setFormatter(JsonLogFormatter())
+    else:
+        handler = logging.StreamHandler()
+        handler.setFormatter(JsonLogFormatter())
+        root.addHandler(handler)
+
+    level_name = str(os.getenv("LOG_LEVEL", "INFO")).upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root.setLevel(level)
+
+
+_setup_logging()
+logger = logging.getLogger("attendance.api")
+
+
+def _setup_sentry():
+    dsn = str(os.getenv("SENTRY_DSN", "")).strip()
+    if not dsn or sentry_sdk is None or FlaskIntegration is None:
+        return False
+
+    traces_sample_rate_raw = str(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")).strip() or "0.1"
+    try:
+        traces_sample_rate = float(traces_sample_rate_raw)
+    except ValueError:
+        traces_sample_rate = 0.1
+
+    sentry_sdk.init(
+        dsn=dsn,
+        integrations=[FlaskIntegration()],
+        environment=APP_ENV,
+        traces_sample_rate=max(0.0, min(1.0, traces_sample_rate)),
+        send_default_pii=False,
+    )
+    return True
+
+
+SENTRY_ENABLED = _setup_sentry()
+
+
 def _validate_required_prod_env():
     if APP_ENV not in {"prod", "production"}:
         return
@@ -97,9 +186,8 @@ def _validate_required_prod_env():
 
     admin_user = str(os.getenv("ADMIN_USERNAME", "")).strip()
     admin_hash = str(os.getenv("ADMIN_PASSWORD_HASH", "")).strip()
-    admin_password = str(os.getenv("ADMIN_PASSWORD", "")).strip()
-    if not admin_user or (not admin_hash and not admin_password):
-        missing.append("ADMIN_USERNAME + (ADMIN_PASSWORD_HASH or ADMIN_PASSWORD)")
+    if not admin_user or not admin_hash:
+        missing.append("ADMIN_USERNAME + ADMIN_PASSWORD_HASH")
 
     for key in ("OFFICE_LAT", "OFFICE_LNG", "OFFICE_RADIUS_METERS"):
         if not str(os.getenv(key, "")).strip():
@@ -123,7 +211,13 @@ CORS(app, resources={r"/*": {"origins": allowed_origins}})
 max_upload_mb = float(os.getenv("MAX_CONTENT_LENGTH_MB", "10"))
 app.config["MAX_CONTENT_LENGTH"] = int(max_upload_mb * 1024 * 1024)
 
-limiter = Limiter(get_remote_address, app=app, default_limits=["5000 per hour", "300 per minute"])
+rate_limit_storage_uri = str(os.getenv("RATE_LIMIT_STORAGE_URI", "memory://")).strip() or "memory://"
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["5000 per hour", "300 per minute"],
+    storage_uri=rate_limit_storage_uri,
+)
 DATASET_PATH = BASE_DIR / os.getenv("DATASET_PATH", "../persistent/dataset")
 MODEL_PATH = BASE_DIR / os.getenv("MODEL_PATH", "../persistent/models/face_encodings.pkl")
 MANUAL_REQUESTS_IMAGE_DIR = BASE_DIR / os.getenv("MANUAL_REQUESTS_IMAGE_DIR", "../persistent/manual_requests")
@@ -213,7 +307,32 @@ def _set_security_headers(response):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(self), geolocation=(self)")
     response.headers.setdefault("Cache-Control", "no-store")
+
+    start_ts = getattr(g, "request_start_ts", None)
+    if start_ts is not None:
+        duration_ms = round((time.perf_counter() - start_ts) * 1000.0, 2)
+        response.headers.setdefault("X-Request-ID", str(getattr(g, "request_id", "")))
+        logger.info(
+            "http_request",
+            extra={
+                "event": "http_request",
+                "request_id": getattr(g, "request_id", None),
+                "method": request.method,
+                "path": request.path,
+                "status": response.status_code,
+                "duration_ms": duration_ms,
+                "remote_addr": request.headers.get("X-Forwarded-For", request.remote_addr),
+                "app_env": APP_ENV,
+            },
+        )
     return response
+
+
+@app.before_request
+def _request_observability_context():
+    g.request_start_ts = time.perf_counter()
+    rid = request.headers.get("X-Request-ID", "").strip()
+    g.request_id = rid if rid else uuid.uuid4().hex
 
 
 def _env_float(name: str, default=None):
@@ -613,7 +732,9 @@ def _load_recognition_settings_from_db():
 
 
 def _bootstrap_employee_credentials():
-    default_password = os.getenv("DEFAULT_EMPLOYEE_PASSWORD", "1234")
+    default_password = str(os.getenv("DEFAULT_EMPLOYEE_PASSWORD", "") or "").strip()
+    if _validate_password_policy(default_password, label="Default password"):
+        default_password = "Temp#{}{}".format(uuid.uuid4().hex[:5], uuid.uuid4().hex[:3])
     changed = False
     now = datetime.now()
 
@@ -631,6 +752,7 @@ def _bootstrap_employee_credentials():
             login_id = candidate
 
         update = {}
+        unset_fields = {}
         if row.get("login_id") != login_id:
             update["login_id"] = login_id
 
@@ -640,8 +762,8 @@ def _bootstrap_employee_credentials():
             update["password_updated_by"] = "admin"
             update["password_updated_at"] = now
 
-        if "password_visible_for_admin" not in row:
-            update["password_visible_for_admin"] = ""
+        if "password_visible_for_admin" in row:
+            unset_fields["password_visible_for_admin"] = ""
 
         if "must_change_password" not in row:
             update["must_change_password"] = True
@@ -652,9 +774,15 @@ def _bootstrap_employee_credentials():
         if "password_updated_at" not in row:
             update["password_updated_at"] = row.get("updated_at") or now
 
-        if update:
-            update["updated_at"] = datetime.now()
-            db.employees.update_one({"_id": row["_id"]}, {"$set": update})
+        if update or unset_fields:
+            if update:
+                update["updated_at"] = datetime.now()
+            patch = {}
+            if update:
+                patch["$set"] = update
+            if unset_fields:
+                patch["$unset"] = unset_fields
+            db.employees.update_one({"_id": row["_id"]}, patch)
             changed = True
 
         seen_login_ids.add(login_id)
@@ -736,6 +864,7 @@ def _start_training_if_idle() -> Optional[str]:
 
 @app.get("/health")
 def health_check():
+    deps = _dependency_health()
     return jsonify(
         {
             "status": "ok",
@@ -746,6 +875,70 @@ def health_check():
             "env_file": LOADED_ENV_FILE,
             "mock_db_persist": bool(mock_db_persist) if using_mock_db else None,
             "mock_db_reset_on_start": bool(mock_db_reset_on_start) if using_mock_db else None,
+            "rate_limit_storage_uri": rate_limit_storage_uri,
+            "sentry_enabled": bool(SENTRY_ENABLED),
+            "dependencies": deps,
+        }
+    )
+
+
+def _dependency_health():
+    deps = {
+        "mongo": {"ok": False, "detail": "uninitialized"},
+        "redis": {"ok": None, "detail": "not_configured"},
+    }
+
+    try:
+        if using_mock_db:
+            deps["mongo"] = {"ok": True, "detail": "mock"}
+        else:
+            mongo_client.admin.command("ping")
+            deps["mongo"] = {"ok": True, "detail": "ping_ok"}
+    except Exception as exc:
+        deps["mongo"] = {"ok": False, "detail": str(exc)}
+
+    parsed = urlparse(rate_limit_storage_uri)
+    if parsed.scheme.startswith("redis"):
+        if redis is None:
+            deps["redis"] = {"ok": False, "detail": "redis package missing"}
+        else:
+            try:
+                client = redis.from_url(rate_limit_storage_uri, socket_timeout=1, socket_connect_timeout=1)
+                pong = client.ping()
+                deps["redis"] = {"ok": bool(pong), "detail": "ping_ok" if pong else "ping_failed"}
+            except Exception as exc:
+                deps["redis"] = {"ok": False, "detail": str(exc)}
+
+    return deps
+
+
+@app.get("/ready")
+def readiness_check():
+    deps = _dependency_health()
+    mongo_ok = bool((deps.get("mongo") or {}).get("ok"))
+    redis_state = (deps.get("redis") or {}).get("ok")
+    redis_ok = True if redis_state is None else bool(redis_state)
+    ready = bool(mongo_ok and redis_ok)
+    return (
+        jsonify(
+            {
+                "status": "ready" if ready else "not_ready",
+                "app_env": APP_ENV,
+                "dependencies": deps,
+            }
+        ),
+        200 if ready else 503,
+    )
+
+
+@app.get("/security/token_policy")
+@admin_auth_required
+def security_token_policy():
+    policy = get_token_policy()
+    return jsonify(
+        {
+            "admin_expires_min": int(policy.get("admin_expires_min", 0)),
+            "user_expires_min": int(policy.get("user_expires_min", 0)),
         }
     )
 
@@ -1028,7 +1221,7 @@ def admin_login_page():
                 <h3>Employees</h3>
                 <div id="employeesCount" class="pill">0 records</div>
                 <table>
-                    <thead><tr><th>Name</th><th>Login ID</th><th>Dept</th><th>Password</th></tr></thead>
+                    <thead><tr><th>Name</th><th>Login ID</th><th>Dept</th><th>Password Status</th></tr></thead>
                     <tbody id="employeesBody"></tbody>
                 </table>
             </article>
@@ -1116,7 +1309,7 @@ def admin_login_page():
                     e.name,
                     e.login_id,
                     e.department || 'General',
-                    e.password_visible_for_admin || '-'
+                    e.must_change_password ? 'Reset required' : 'Protected'
                 ]));
             }
             if (!employees.length) {
@@ -1538,21 +1731,6 @@ def user_login():
         log_audit("user_login", status="failed", details={"login_id": login_id, "reason": "bad_password"})
         return jsonify({"success": False, "message": "Invalid credentials"}), 401
 
-    # Backfill latest visible password for admin directory on successful login.
-    # This helps older records that were created before password visibility tracking existed.
-    if (employee.get("password_visible_for_admin") or "") != password:
-        now = datetime.now()
-        update = {
-            "password_visible_for_admin": password,
-            "updated_at": now,
-        }
-        if not employee.get("password_updated_at"):
-            update["password_updated_at"] = now
-        if not employee.get("password_updated_by"):
-            update["password_updated_by"] = "user"
-        db.employees.update_one({"_id": employee["_id"]}, {"$set": update})
-        persist_mock_db_now()
-
     must_change_password = bool(employee.get("must_change_password"))
     log_audit(
         "user_login",
@@ -1577,6 +1755,24 @@ def user_login():
             },
         }
     )
+
+
+@app.post("/auth/refresh_user")
+@user_auth_required
+@limiter.limit("120 per hour")
+def refresh_user_session():
+    claims = getattr(g, "user_claims", {}) or {}
+    token = refresh_user_token(claims)
+    return jsonify({"success": True, "token": token})
+
+
+@app.post("/auth/refresh_admin")
+@admin_auth_required
+@limiter.limit("120 per hour")
+def refresh_admin_session():
+    claims = getattr(g, "admin_claims", {}) or {}
+    token = refresh_admin_token(claims)
+    return jsonify({"success": True, "token": token})
 
 
 @app.post("/user/change_password")
@@ -1621,7 +1817,6 @@ def user_change_password():
         {
             "$set": {
                 "password_hash": build_password_hash(new_password),
-                "password_visible_for_admin": new_password,
                 "must_change_password": False,
                 "password_updated_by": "user",
                 "password_updated_at": datetime.now(),
@@ -1822,7 +2017,6 @@ def register_employee():
                     "department": department,
                     "login_id": login_id,
                     "password_hash": build_password_hash(password),
-                    "password_visible_for_admin": password,
                     "must_change_password": True,
                     "password_updated_by": "admin",
                     "password_updated_at": datetime.now(),
@@ -1853,7 +2047,6 @@ def register_employee():
                 "department": department,
                 "login_id": login_id,
                 "password_hash": build_password_hash(password),
-                "password_visible_for_admin": password,
                 "must_change_password": True,
                 "password_updated_by": "admin",
                 "password_updated_at": datetime.now(),
@@ -2453,7 +2646,6 @@ def update_employee(employee_id):
         if password_issue:
             return jsonify({"message": password_issue}), 400
         updates["password_hash"] = build_password_hash(new_password)
-        updates["password_visible_for_admin"] = new_password
         updates["must_change_password"] = True
         updates["password_updated_by"] = "admin"
         updates["password_updated_at"] = datetime.now()
@@ -2491,7 +2683,7 @@ def update_employee(employee_id):
 @limiter.limit("120 per hour")
 def reset_employee_password(employee_id):
     payload = request.get_json(silent=True) or {}
-    new_password = payload.get("new_password") or os.getenv("DEFAULT_EMPLOYEE_PASSWORD", "1234")
+    new_password = payload.get("new_password") or os.getenv("DEFAULT_EMPLOYEE_PASSWORD", "")
 
     password_issue = _validate_password_policy(new_password)
     if password_issue:
@@ -2514,7 +2706,6 @@ def reset_employee_password(employee_id):
         {
             "$set": {
                 "password_hash": build_password_hash(new_password),
-                "password_visible_for_admin": new_password,
                 "must_change_password": True,
                 "password_updated_by": "admin",
                 "password_updated_at": datetime.now(),
@@ -2584,6 +2775,26 @@ def delete_employee(employee_id):
 @app.errorhandler(RequestEntityTooLarge)
 def handle_large_upload(_error):
     return jsonify({"message": "Upload too large"}), 413
+
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(error):
+    if isinstance(error, HTTPException):
+        return error
+
+    logger.exception(
+        "unhandled_exception",
+        extra={
+            "event": "unhandled_exception",
+            "request_id": getattr(g, "request_id", None),
+            "method": request.method if request else None,
+            "path": request.path if request else None,
+            "app_env": APP_ENV,
+        },
+    )
+    if sentry_sdk is not None and SENTRY_ENABLED:
+        sentry_sdk.capture_exception(error)
+    return jsonify({"message": "Internal server error"}), 500
 
 
 if __name__ == "__main__":
