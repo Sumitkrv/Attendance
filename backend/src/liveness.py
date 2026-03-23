@@ -1,4 +1,5 @@
 from collections import defaultdict, deque
+import time
 
 import cv2
 import numpy as np
@@ -40,6 +41,8 @@ class LivenessAndSpoofGuard:
         self._blink_count = defaultdict(int)
         self._center_history = defaultdict(lambda: deque(maxlen=12))
         self._ear_history = defaultdict(lambda: deque(maxlen=25))
+        self._first_seen_ts = {}
+        self._last_seen_ts = {}
 
     def reset_person(self, person_key: str):
         self._ear_low_streak.pop(person_key, None)
@@ -47,6 +50,8 @@ class LivenessAndSpoofGuard:
         self._blink_count.pop(person_key, None)
         self._center_history.pop(person_key, None)
         self._ear_history.pop(person_key, None)
+        self._first_seen_ts.pop(person_key, None)
+        self._last_seen_ts.pop(person_key, None)
 
     def has_blink(self, person_key: str) -> bool:
         return bool(self._blink_seen.get(person_key, False))
@@ -118,6 +123,13 @@ class LivenessAndSpoofGuard:
         return self._blink_seen[person_key], float(ear), float(dynamic_threshold)
 
     def verify(self, person_key: str, face_roi_bgr, landmarks: dict, scaled_location) -> tuple[bool, dict]:
+        now_ts = time.monotonic()
+        first_seen = self._first_seen_ts.get(person_key)
+        if first_seen is None:
+            first_seen = now_ts
+            self._first_seen_ts[person_key] = first_seen
+        self._last_seen_ts[person_key] = now_ts
+
         top, right, bottom, left = scaled_location
         cx = int((left + right) / 2)
         cy = int((top + bottom) / 2)
@@ -145,5 +157,6 @@ class LivenessAndSpoofGuard:
             "texture_score": round(texture_score, 2),
             "ear": round(float(ear), 4),
             "ear_threshold": round(float(ear_threshold), 4),
+            "elapsed_sec": round(max(0.0, now_ts - first_seen), 3),
         }
         return is_live, meta

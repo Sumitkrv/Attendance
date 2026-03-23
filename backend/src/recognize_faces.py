@@ -42,6 +42,7 @@ class FaceRecognizer:
         self.scan_edge_margin_ratio = max(0.0, env_float("SCAN_EDGE_MARGIN_RATIO", 0.02))
         self.scan_expected_tolerance = env_float("SCAN_EXPECTED_TOLERANCE", 0.58)
         self.scan_expected_margin = env_float("SCAN_EXPECTED_MARGIN", 0.03)
+        self.scan_min_duration_seconds = max(0.0, env_float("SCAN_MIN_DURATION_SECONDS", 2.0))
         self.liveness_movement_min_pixels_floor = max(1, env_int("LIVENESS_MOVEMENT_MIN_PIXELS", 3))
         self.liveness_movement_min_frames = max(2, env_int("LIVENESS_MOVEMENT_MIN_FRAMES", 4))
         self.liveness_movement_min_span_pixels = max(
@@ -129,6 +130,7 @@ class FaceRecognizer:
             "scan_edge_margin_ratio": self.scan_edge_margin_ratio,
             "scan_expected_tolerance": self.scan_expected_tolerance,
             "scan_expected_margin": self.scan_expected_margin,
+            "scan_min_duration_seconds": self.scan_min_duration_seconds,
             "blink_consec_frames": self.guard.blink_consec_frames,
             "movement_min_pixels": self.guard.movement_min_pixels,
             "movement_min_frames": self.guard.movement_min_frames,
@@ -166,6 +168,8 @@ class FaceRecognizer:
             self.scan_expected_tolerance = float(payload["scan_expected_tolerance"])
         if "scan_expected_margin" in payload:
             self.scan_expected_margin = float(payload["scan_expected_margin"])
+        if "scan_min_duration_seconds" in payload:
+            self.scan_min_duration_seconds = max(0.0, float(payload["scan_min_duration_seconds"]))
         if "blink_consec_frames" in payload:
             self.guard.blink_consec_frames = max(1, int(payload["blink_consec_frames"]))
         if "movement_min_pixels" in payload:
@@ -524,6 +528,7 @@ class FaceRecognizer:
             closed_eye_frame = ear > 0 and ear_threshold > 0 and ear <= (ear_threshold * 0.92)
             has_blink = int(meta.get("blink_count") or 0) >= 1 or closed_eye_frame
             has_movement = bool(meta.get("movement_ok")) or abs(head_offset) >= 0.012
+            elapsed_sec = float(meta.get("elapsed_sec") or 0.0)
 
             # Enforce mandatory blink + movement for attendance marking.
             if not (has_blink and has_movement):
@@ -531,6 +536,16 @@ class FaceRecognizer:
                 return {
                     "status": "wrong_data",
                     "message": "Please blink once and move your face slightly, then try again.",
+                }
+
+            if elapsed_sec < float(self.scan_min_duration_seconds):
+                self._set_event("error", "Wrong data: hold steady for minimum scan time", status="wrong_data")
+                return {
+                    "status": "wrong_data",
+                    "message": (
+                        f"Keep scanning for at least {self.scan_min_duration_seconds:.1f}s "
+                        "while blinking once and moving slightly."
+                    ),
                 }
 
             if self.scan_require_blink:

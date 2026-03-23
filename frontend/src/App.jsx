@@ -2675,7 +2675,8 @@ function UserPage() {
     scanInFlightRef.current = true
 
     try {
-      setChallengeInstruction('')
+      setChallengeInstruction('Blink your eyes and move slightly to mark your attendance.')
+      setStatus('Blink your eyes and move slightly to mark your attendance.')
       const canvas = canvasRef.current
       const video = videoRef.current
       const srcW = video.videoWidth || 640
@@ -2685,21 +2686,42 @@ function UserPage() {
       canvas.width = Math.max(1, Math.round(srcW * scale))
       canvas.height = Math.max(1, Math.round(srcH * scale))
       const ctx = canvas.getContext('2d')
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const minScanMs = 2000
+      const attemptGapMs = 420
+      const startedAt = Date.now()
+      let data = null
+      let lastErr = null
 
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.74))
-      const formData = new FormData()
-      formData.append('image', blob, 'scan.jpg')
-      if (geo.lat && geo.lng) {
-        formData.append('lat', geo.lat)
-        formData.append('lng', geo.lng)
+      while (Date.now() - startedAt < minScanMs) {
+        try {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.74))
+          const formData = new FormData()
+          formData.append('image', blob, 'scan.jpg')
+          if (geo.lat && geo.lng) {
+            formData.append('lat', geo.lat)
+            formData.append('lng', geo.lng)
+          }
+          if (geo.accuracy) formData.append('accuracy', geo.accuracy)
+
+          data = await apiFetch('/scan_attendance', {
+            method: 'POST',
+            body: formData,
+          }, token)
+        } catch (err) {
+          lastErr = err
+        }
+
+        const remaining = minScanMs - (Date.now() - startedAt)
+        if (remaining > 0) {
+          await new Promise((resolve) => setTimeout(resolve, Math.min(attemptGapMs, remaining)))
+        }
       }
-      if (geo.accuracy) formData.append('accuracy', geo.accuracy)
 
-      const data = await apiFetch('/scan_attendance', {
-        method: 'POST',
-        body: formData,
-      }, token)
+      if (!data) {
+        if (lastErr) throw lastErr
+        throw new Error('Blink your eyes and move slightly to mark your attendance, then retry.')
+      }
 
       if (data?.status) {
         setAttendanceState(String(data.status).toLowerCase())
@@ -2722,6 +2744,7 @@ function UserPage() {
       setStatus(text)
       setMessage('Attendance processed')
       setError('')
+      setChallengeInstruction('')
       clearRetryAction()
       if (['checked_in', 'checked_out', 'already_recorded'].includes(String(data.status || ''))) {
         const title = data.status === 'already_recorded' ? 'Already Marked' : 'Attendance Marked'

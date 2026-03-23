@@ -1,0 +1,61 @@
+{
+  "base_url": "http://127.0.0.1:5001",
+  "checks": {
+    "session_refresh_rotation": {
+      "ok": true,
+      "status_code": 200,
+      "token_rotated": true
+    },
+    "user_login_session_expiry": {
+      "ok": true,
+      "token_minutes": 10080,
+      "expected_min_minutes": 10080,
+      "policy_user_expires_min": 10080
+    },
+    "geofence_off_block": {
+      "ok": true,
+      "status_code": 403,
+      "status": "geofence_disabled",
+      "message": "Location verification is disabled by admin. Enable geofence in admin settings to mark attendance."
+    },
+    "geofence_on_changed_location": {
+      "ok": true,
+      "inside_probe": {
+        "status_code": 400,
+        "status": "wrong_data",
+        "message": "Image file is required"
+      },
+      "outside_probe": {
+        "status_code": 403,
+        "status": "outside_office",
+        "message": "Outside office location. Distance 441237.3m, allowed 500.0m (+accuracy 0.0m)."
+      },
+      "office": {
+        "lat": 28.502756,
+        "lng": 77.230419,
+        "radius_m": 500.0
+      }
+    },
+    "face_mismatch_rejection": {
+      "ok": true,
+      "status_code": 422,
+      "status": "wrong_data",
+      "message": "User face is not matching",
+      "logged_in_user": {
+        "name": "verma",
+        "login_id": "ver"
+      },
+      "wrong_image_user": {
+        "name": "sumit",
+        "login_id": "sumi",
+        "image": "/Users/sumitthakur/Desktop/Attendance/face-attendance-system/backend/../persistent/dataset/sumit/capture_01.jpg"
+      }
+    }
+  },
+  "ok": true,
+  "user_selection": {
+    "usable_count": 2,
+    "notes": []
+  },
+  "failures": []
+}

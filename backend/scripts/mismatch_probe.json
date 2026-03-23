@@ -1,0 +1,62 @@
+[
+  {
+    "file": "capture_01.jpg",
+    "status_code": 422,
+    "status": "wrong_data",
+    "message": "Come closer to camera or properly align your face."
+  },
+  {
+    "file": "capture_02.jpg",
+    "status_code": 422,
+    "status": "wrong_data",
+    "message": "Come closer to camera or properly align your face."
+  },
+  {
+    "file": "capture_03.jpg",
+    "status_code": 422,
+    "status": "wrong_data",
+    "message": "User face is not matching"
+  },
+  {
+    "file": "capture_04.jpg",
+    "status_code": 422,
+    "status": "wrong_data",
+    "message": "User face is not matching"
+  },
+  {
+    "file": "capture_05.jpg",
+    "status_code": 422,
+    "status": "wrong_data",
+    "message": "User face is not matching"
+  },
+  {
+    "file": "capture_06.jpg",
+    "status_code": 422,
+    "status": "wrong_data",
+    "message": "User face is not matching"
+  },
+  {
+    "file": "capture_07.jpg",
+    "status_code": 422,
+    "status": "wrong_data",
+    "message": "User face is not matching"
+  },
+  {
+    "file": "capture_08.jpg",
+    "status_code": 422,
+    "status": "wrong_data",
+    "message": "User face is not matching"
+  },
+  {
+    "file": "capture_09.jpg",
+    "status_code": 422,
+    "status": "wrong_data",
+    "message": "User face is not matching"
+  },
+  {
+    "file": "capture_10.jpg",
+    "status_code": 422,
+    "status": "wrong_data",
+    "message": "User face is not matching"
+  }
+]

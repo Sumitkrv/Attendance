@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import face_recognition
 from dotenv import load_dotenv
-from flask import Flask, g, jsonify, request, render_template_string
+from flask import Flask, g, jsonify, request, render_template_string, redirect
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -99,6 +99,8 @@ def _load_environment():
 
 
 APP_ENV, LOADED_ENV_FILE = _load_environment()
+DISABLE_BACKEND_UI = str(os.getenv("DISABLE_BACKEND_UI", "true")).strip().lower() in {"1", "true", "yes", "on"}
+FRONTEND_APP_BASE_URL = str(os.getenv("FRONTEND_APP_BASE_URL", "http://127.0.0.1:5173")).strip().rstrip("/")
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -333,6 +335,25 @@ def _request_observability_context():
     g.request_start_ts = time.perf_counter()
     rid = request.headers.get("X-Request-ID", "").strip()
     g.request_id = rid if rid else uuid.uuid4().hex
+
+
+@app.before_request
+def _disable_legacy_backend_ui_routes():
+    if not DISABLE_BACKEND_UI:
+        return None
+    if request.method not in {"GET", "HEAD"}:
+        return None
+
+    path = request.path or ""
+    if path not in {"/", "/admin", "/user"}:
+        return None
+
+    redirect_map = {
+        "/": FRONTEND_APP_BASE_URL,
+        "/admin": f"{FRONTEND_APP_BASE_URL}/admin",
+        "/user": f"{FRONTEND_APP_BASE_URL}/user",
+    }
+    return redirect(redirect_map[path], code=302)
 
 
 def _env_float(name: str, default=None):
