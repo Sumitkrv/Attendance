@@ -25,7 +25,7 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from pymongo import MongoClient
-from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
+from pymongo.errors import PyMongoError, ServerSelectionTimeoutError, DuplicateKeyError
 from werkzeug.exceptions import HTTPException
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -2073,7 +2073,11 @@ def register_employee():
         return jsonify({"message": password_issue}), 400
 
     folder_name = slugify_name(name)
-    employee_folder = ensure_dir(DATASET_PATH / folder_name)
+    try:
+        employee_folder = ensure_dir(DATASET_PATH / folder_name)
+    except Exception:
+        logger.exception("register_employee_storage_unavailable")
+        return jsonify({"message": "Employee image storage is not writable. Check DATASET_PATH/volume mount."}), 500
 
     saved_files = []
     skipped_files = []
@@ -2085,7 +2089,16 @@ def register_employee():
 
         filename = Path(file.filename).name
         target = employee_folder / filename
-        file.save(target)
+        try:
+            file.save(target)
+        except Exception:
+            skipped_files.append(
+                {
+                    "file": filename,
+                    "reason": "Unable to save image to server storage",
+                }
+            )
+            continue
 
         if validate_enrollment_faces:
             try:
@@ -2143,20 +2156,23 @@ def register_employee():
         if conflict:
             return jsonify({"message": "Login ID already exists"}), 409
 
-        db.employees.update_one(
-            {"_id": existing["_id"]},
-            {
-                "$set": {
-                    "department": department,
-                    "login_id": login_id,
-                    "password_hash": build_password_hash(password),
-                    "must_change_password": True,
-                    "password_updated_by": "admin",
-                    "password_updated_at": datetime.now(),
-                    "updated_at": datetime.now(),
-                }
-            },
-        )
+        try:
+            db.employees.update_one(
+                {"_id": existing["_id"]},
+                {
+                    "$set": {
+                        "department": department,
+                        "login_id": login_id,
+                        "password_hash": build_password_hash(password),
+                        "must_change_password": True,
+                        "password_updated_by": "admin",
+                        "password_updated_at": datetime.now(),
+                        "updated_at": datetime.now(),
+                    }
+                },
+            )
+        except DuplicateKeyError:
+            return jsonify({"message": "Login ID already exists"}), 409
         if len(saved_files) > 0:
             db.employees.update_one(
                 {"_id": existing["_id"]},
@@ -2174,20 +2190,23 @@ def register_employee():
                 ),
                 400,
             )
-        db.employees.insert_one(
-            {
-                "name": folder_name,
-                "department": department,
-                "login_id": login_id,
-                "password_hash": build_password_hash(password),
-                "must_change_password": True,
-                "password_updated_by": "admin",
-                "password_updated_at": datetime.now(),
-                "image_folder": str(employee_folder) if len(saved_files) > 0 else "",
-                "created_at": datetime.now(),
-                "updated_at": datetime.now(),
-            }
-        )
+        try:
+            db.employees.insert_one(
+                {
+                    "name": folder_name,
+                    "department": department,
+                    "login_id": login_id,
+                    "password_hash": build_password_hash(password),
+                    "must_change_password": True,
+                    "password_updated_by": "admin",
+                    "password_updated_at": datetime.now(),
+                    "image_folder": str(employee_folder) if len(saved_files) > 0 else "",
+                    "created_at": datetime.now(),
+                    "updated_at": datetime.now(),
+                }
+            )
+        except DuplicateKeyError:
+            return jsonify({"message": "Login ID already exists"}), 409
 
     persist_mock_db_now()
     log_audit(
