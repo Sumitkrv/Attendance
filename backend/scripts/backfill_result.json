@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "updated_count": 1,
+  "updated": [
+    {
+      "name": "sumit",
+      "login_id": "sumi",
+      "status": "updated",
+      "temporary_password": "Sumi@12345"
+    }
+  ],
+  "final": [
+    {
+      "name": "sumit",
+      "login_id": "sumi",
+      "password_visible_for_admin": ""
+    },
+    {
+      "name": "verma",
+      "login_id": "ver",
+      "password_visible_for_admin": "Verma@12345"
+    }
+  ]
+}

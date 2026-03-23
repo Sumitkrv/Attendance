@@ -120,7 +120,7 @@ class AttendanceManager:
         for row in rows:
             row["id"] = str(row.pop("_id"))
             row.pop("password_hash", None)
-            row["password_visible_for_admin"] = row.get("password_visible_for_admin") or ""
+            row["password_visible_for_admin"] = str(row.get("password_visible_for_admin") or "")
             if isinstance(row.get("updated_at"), datetime):
                 row["updated_at"] = row["updated_at"].isoformat()
             if isinstance(row.get("password_updated_at"), datetime):
@@ -139,6 +139,7 @@ class AttendanceManager:
         updated = self.employees.find_one({"_id": employee["_id"]})
         updated["id"] = str(updated.pop("_id"))
         updated.pop("password_hash", None)
+        updated["password_visible_for_admin"] = str(updated.get("password_visible_for_admin") or "")
         return {"status": "ok", "employee": updated}
 
     def delete_employee(self, employee_id: str) -> dict:

@@ -44,6 +44,9 @@ class LivenessAndSpoofGuard:
         self._center_history.pop(person_key, None)
         self._ear_history.pop(person_key, None)
 
+    def has_blink(self, person_key: str) -> bool:
+        return bool(self._blink_seen.get(person_key, False))
+
     def _laplacian_variance(self, face_roi_bgr) -> float:
         gray = cv2.cvtColor(face_roi_bgr, cv2.COLOR_BGR2GRAY)
         return float(cv2.Laplacian(gray, cv2.CV_64F).var())
@@ -61,7 +64,7 @@ class LivenessAndSpoofGuard:
         left = landmarks.get("left_eye")
         right = landmarks.get("right_eye")
         if not left or not right or len(left) < 6 or len(right) < 6:
-            return False, 0.0, 0.21
+            return bool(self._blink_seen.get(person_key, False)), 0.0, 0.21
 
         ear = (_eye_aspect_ratio(left) + _eye_aspect_ratio(right)) / 2.0
         self._ear_history[person_key].append(float(ear))

@@ -145,6 +145,7 @@ function AdminPage() {
   const [geofenceSaving, setGeofenceSaving] = useState(false)
   const [recognitionTesting, setRecognitionTesting] = useState(false)
   const [geofenceTesting, setGeofenceTesting] = useState(false)
+  const [geofenceFetching, setGeofenceFetching] = useState(false)
   const [recognitionTestResult, setRecognitionTestResult] = useState({ type: '', text: '' })
   const [geofenceTestResult, setGeofenceTestResult] = useState({ type: '', text: '' })
   const [confirmModal, setConfirmModal] = useState({
@@ -156,8 +157,28 @@ function AdminPage() {
   })
   const [confirmSubmitting, setConfirmSubmitting] = useState(false)
   const [requestDetailsModal, setRequestDetailsModal] = useState({ open: false, request: null })
+  const [rejectReasonModal, setRejectReasonModal] = useState({
+    open: false,
+    requestId: '',
+    reason: 'Rejected by admin',
+    saving: false,
+  })
+  const [editEmployeeModal, setEditEmployeeModal] = useState({
+    open: false,
+    row: null,
+    name: '',
+    loginId: '',
+    department: 'General',
+    saving: false,
+  })
+  const [resetPasswordModal, setResetPasswordModal] = useState({
+    open: false,
+    employeeId: '',
+    employeeName: '',
+    password: '',
+    saving: false,
+  })
   const [tableActionBusy, setTableActionBusy] = useState({})
-  const [visiblePasswords, setVisiblePasswords] = useState({})
   const [enrollmentCameraOn, setEnrollmentCameraOn] = useState(false)
   const [enrollmentCapturing, setEnrollmentCapturing] = useState(false)
   const [enrollmentProgress, setEnrollmentProgress] = useState(0)
@@ -809,18 +830,33 @@ function AdminPage() {
   }
 
   async function reject(id) {
+    if (!id) return
+    setRejectReasonModal({
+      open: true,
+      requestId: id,
+      reason: 'Rejected by admin',
+      saving: false,
+    })
+  }
+
+  async function submitRejectReason() {
+    const id = rejectReasonModal.requestId
+    const reason = String(rejectReasonModal.reason || '').trim() || 'Rejected by admin'
+    if (!id) return
     setError('')
     try {
-      const reason = window.prompt('Rejection reason', 'Rejected by admin') || 'Rejected by admin'
+      setRejectReasonModal((old) => ({ ...old, saving: true }))
       await apiFetch(`/manual_requests/${id}/reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason }),
       }, token)
+      setRejectReasonModal({ open: false, requestId: '', reason: 'Rejected by admin', saving: false })
       flash('Manual request rejected')
       await loadAll()
     } catch (err) {
       setError(err.message)
+      setRejectReasonModal((old) => ({ ...old, saving: false }))
     }
   }
 
@@ -1037,46 +1073,120 @@ function AdminPage() {
     }
   }
 
+  async function fetchCurrentOfficeLocation() {
+    if (geofenceFetching) return
+    if (!navigator.geolocation) {
+      setGeofenceTestResult({ type: 'error', text: 'Geolocation is not supported in this browser' })
+      return
+    }
+
+    setGeofenceFetching(true)
+    setGeofenceTestResult({ type: '', text: '' })
+
+    try {
+      const pos = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 12000,
+          maximumAge: 0,
+        })
+      })
+
+      const lat = Number(pos.coords.latitude)
+      const lng = Number(pos.coords.longitude)
+      const accuracy = Number(pos.coords.accuracy || 0)
+
+      setGeofence((old) => ({
+        ...(old || {}),
+        enabled: true,
+        office_lat: Number.isFinite(lat) ? lat.toFixed(6) : old?.office_lat,
+        office_lng: Number.isFinite(lng) ? lng.toFixed(6) : old?.office_lng,
+      }))
+
+      setSettingsFeedback({ type: 'success', text: 'Office location fetched. Save geofence settings to apply.' })
+      setGeofenceTestResult({
+        type: 'success',
+        text: `Location fetched (±${Math.round(accuracy)}m). Click Save Geofence Settings.`,
+      })
+    } catch {
+      setGeofenceTestResult({ type: 'error', text: 'Unable to fetch current location. Please allow location permission.' })
+    } finally {
+      setGeofenceFetching(false)
+    }
+  }
+
   async function resetPassword(employeeId) {
-    setConfirmModal({
+    const row = (employees || []).find((e) => e.id === employeeId)
+    setResetPasswordModal({
       open: true,
-      title: 'Are you sure?',
-      message: 'This will reset employee password and require update from admin provided value.',
-      confirmText: 'Confirm',
-      onConfirm: async () => {
-        const newPassword = window.prompt('Enter new password (letters + numbers)', 'Welcome123')
-        if (!newPassword) return
-        try {
-          await apiFetch(`/employees/${employeeId}/reset_password`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ new_password: newPassword }),
-          }, token)
-          flash('Employee password reset')
-          await loadAll()
-        } catch (err) {
-          setError(err.message)
-        }
-      },
+      employeeId,
+      employeeName: row?.name || row?.login_id || 'Employee',
+      password: 'Welcome123',
+      saving: false,
     })
   }
 
-  async function editEmployee(row) {
-    const name = window.prompt('Employee name', row.name || '')
-    if (!name) return
-    const loginId = window.prompt('Login ID', row.login_id || '')
-    if (!loginId) return
-    const dept = window.prompt('Department', row.department || 'General') || 'General'
+  async function submitResetPassword() {
+    if (!resetPasswordModal.employeeId) return
+    if (!resetPasswordModal.password) {
+      setError('Password is required')
+      return
+    }
     try {
-      await apiFetch(`/employees/${row.id}`, {
+      setResetPasswordModal((old) => ({ ...old, saving: true }))
+      await apiFetch(`/employees/${resetPasswordModal.employeeId}/reset_password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ new_password: resetPasswordModal.password }),
+      }, token)
+      setResetPasswordModal({ open: false, employeeId: '', employeeName: '', password: '', saving: false })
+      flash('Employee password reset')
+      await loadAll()
+    } catch (err) {
+      setError(err.message)
+      setResetPasswordModal((old) => ({ ...old, saving: false }))
+    }
+  }
+
+  async function editEmployee(row) {
+    setEditEmployeeModal({
+      open: true,
+      row,
+      name: row?.name || '',
+      loginId: row?.login_id || '',
+      department: row?.department || 'General',
+      saving: false,
+    })
+  }
+
+  async function submitEditEmployee() {
+    if (!editEmployeeModal.row?.id) return
+    const name = String(editEmployeeModal.name || '').trim()
+    const loginId = String(editEmployeeModal.loginId || '').trim().toLowerCase()
+    const dept = String(editEmployeeModal.department || 'General').trim() || 'General'
+
+    if (!name) {
+      setError('Employee name is required')
+      return
+    }
+    if (!loginId) {
+      setError('Login ID is required')
+      return
+    }
+
+    try {
+      setEditEmployeeModal((old) => ({ ...old, saving: true }))
+      await apiFetch(`/employees/${editEmployeeModal.row.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, login_id: loginId.toLowerCase(), department: dept }),
       }, token)
+      setEditEmployeeModal({ open: false, row: null, name: '', loginId: '', department: 'General', saving: false })
       flash('Employee updated')
       await loadAll()
     } catch (err) {
       setError(err.message)
+      setEditEmployeeModal((old) => ({ ...old, saving: false }))
     }
   }
 
@@ -1458,23 +1568,11 @@ function AdminPage() {
                         {(() => {
                           const rawPassword = String(e.password_visible_for_admin || '').trim()
                           const hasPassword = !!rawPassword && rawPassword !== '-'
-                          const isPasswordVisible = !!visiblePasswords[e.id]
-                          const shownPassword = hasPassword
-                            ? (isPasswordVisible ? rawPassword : '••••••••')
-                            : '-'
+                          const shownPassword = hasPassword ? rawPassword : '-'
 
                           return (
                             <div className="row compact">
                               <span>{shownPassword}</span>
-                              {hasPassword && (
-                                <button
-                                  type="button"
-                                  className="ghost table-action-btn"
-                                  onClick={() => setVisiblePasswords((old) => ({ ...old, [e.id]: !old[e.id] }))}
-                                >
-                                  {isPasswordVisible ? 'Hide' : 'Show'}
-                                </button>
-                              )}
                             </div>
                           )
                         })()}
@@ -1903,6 +2001,7 @@ function AdminPage() {
                   />
                   Enable geofence
                 </label>
+                <p className="muted small settings-help">If geofence is disabled, attendance marking is blocked.</p>
                 <label>Office Latitude</label>
                 <p className="muted small settings-help">Example: 28.6139</p>
                 <input
@@ -1946,6 +2045,9 @@ function AdminPage() {
                   </p>
                 </div>
                 <div className="row">
+                  <button type="button" className="ghost" onClick={fetchCurrentOfficeLocation} disabled={geofenceFetching}>
+                    {geofenceFetching ? 'Fetching...' : 'Fetch Current Location'}
+                  </button>
                   <button type="button" className="ghost" onClick={testGeofenceSettings} disabled={geofenceTesting}>
                     {geofenceTesting ? 'Testing...' : 'Test Settings'}
                   </button>
@@ -2012,6 +2114,103 @@ function AdminPage() {
             </div>
             <div className="row modal-actions confirm-modal-actions">
               <button type="button" className="ghost" onClick={() => setRequestDetailsModal({ open: false, request: null })}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {rejectReasonModal.open && (
+        <div className="modal-overlay" onClick={() => setRejectReasonModal({ open: false, requestId: '', reason: 'Rejected by admin', saving: false })}>
+          <div className="modal-card confirm-modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3>Reject Request</h3>
+            <div className="stack">
+              <input
+                type="text"
+                placeholder="Rejection reason"
+                value={rejectReasonModal.reason}
+                onChange={(e) => setRejectReasonModal((old) => ({ ...old, reason: e.target.value }))}
+              />
+            </div>
+            <div className="row modal-actions confirm-modal-actions">
+              <button
+                type="button"
+                className="ghost"
+                disabled={rejectReasonModal.saving}
+                onClick={() => setRejectReasonModal({ open: false, requestId: '', reason: 'Rejected by admin', saving: false })}
+              >
+                Cancel
+              </button>
+              <button type="button" className="danger" disabled={rejectReasonModal.saving} onClick={submitRejectReason}>
+                {rejectReasonModal.saving ? 'Rejecting...' : 'Reject'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {editEmployeeModal.open && (
+        <div className="modal-overlay" onClick={() => setEditEmployeeModal({ open: false, row: null, name: '', loginId: '', department: 'General', saving: false })}>
+          <div className="modal-card confirm-modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3>Edit Employee</h3>
+            <div className="stack">
+              <input
+                type="text"
+                placeholder="Employee name"
+                value={editEmployeeModal.name}
+                onChange={(e) => setEditEmployeeModal((old) => ({ ...old, name: e.target.value }))}
+              />
+              <input
+                type="text"
+                placeholder="Login ID"
+                value={editEmployeeModal.loginId}
+                onChange={(e) => setEditEmployeeModal((old) => ({ ...old, loginId: e.target.value }))}
+              />
+              <input
+                type="text"
+                placeholder="Department"
+                value={editEmployeeModal.department}
+                onChange={(e) => setEditEmployeeModal((old) => ({ ...old, department: e.target.value }))}
+              />
+            </div>
+            <div className="row modal-actions confirm-modal-actions">
+              <button
+                type="button"
+                className="ghost"
+                disabled={editEmployeeModal.saving}
+                onClick={() => setEditEmployeeModal({ open: false, row: null, name: '', loginId: '', department: 'General', saving: false })}
+              >
+                Cancel
+              </button>
+              <button type="button" disabled={editEmployeeModal.saving} onClick={submitEditEmployee}>
+                {editEmployeeModal.saving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {resetPasswordModal.open && (
+        <div className="modal-overlay" onClick={() => setResetPasswordModal({ open: false, employeeId: '', employeeName: '', password: '', saving: false })}>
+          <div className="modal-card confirm-modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3>Reset Password</h3>
+            <p className="muted">Employee: {resetPasswordModal.employeeName}</p>
+            <div className="stack">
+              <input
+                type="text"
+                placeholder="New password"
+                value={resetPasswordModal.password}
+                onChange={(e) => setResetPasswordModal((old) => ({ ...old, password: e.target.value }))}
+              />
+            </div>
+            <div className="row modal-actions confirm-modal-actions">
+              <button
+                type="button"
+                className="ghost"
+                disabled={resetPasswordModal.saving}
+                onClick={() => setResetPasswordModal({ open: false, employeeId: '', employeeName: '', password: '', saving: false })}
+              >
+                Cancel
+              </button>
+              <button type="button" disabled={resetPasswordModal.saving} onClick={submitResetPassword}>
+                {resetPasswordModal.saving ? 'Resetting...' : 'Reset Password'}
+              </button>
             </div>
           </div>
         </div>
@@ -2149,9 +2348,9 @@ function UserPage() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: 640, max: 960 },
-          height: { ideal: 480, max: 720 },
-          frameRate: { ideal: 24, max: 30 },
+          width: { ideal: 480, max: 640 },
+          height: { ideal: 360, max: 480 },
+          frameRate: { ideal: 20, max: 24 },
           facingMode: 'user',
         },
         audio: false,
@@ -2236,10 +2435,16 @@ function UserPage() {
 
   useEffect(() => {
     if (!cameraOn || !token || employee?.must_change_password) return
+    const kickoff = setTimeout(() => {
+      checkInNow(true)
+    }, 120)
     const timer = setInterval(() => {
       checkInNow(true)
-    }, 450)
-    return () => clearInterval(timer)
+    }, 250)
+    return () => {
+      clearTimeout(kickoff)
+      clearInterval(timer)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraOn, token, employee?.must_change_password])
 
@@ -2311,14 +2516,14 @@ function UserPage() {
       const video = videoRef.current
       const srcW = video.videoWidth || 640
       const srcH = video.videoHeight || 480
-      const maxW = 720
+      const maxW = 420
       const scale = srcW > maxW ? maxW / srcW : 1
       canvas.width = Math.max(1, Math.round(srcW * scale))
       canvas.height = Math.max(1, Math.round(srcH * scale))
       const ctx = canvas.getContext('2d')
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9))
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.74))
       const formData = new FormData()
       formData.append('image', blob, 'scan.jpg')
       if (geo.lat && geo.lng) {
@@ -2506,6 +2711,7 @@ function UserPage() {
   const statusTimeMatch = statusText.match(/\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:AM|PM|am|pm)?)\b/)
   const checkedInAtText = attendanceTimes.checkIn || (statusTimeMatch ? statusTimeMatch[1] : '--')
   const checkedOutAtText = attendanceTimes.checkOut || ''
+  const geofenceDisabled = /location\s+verification\s+is\s+disabled\s+by\s+admin|geofence_disabled|geofence\s+is\s+disabled/i.test(`${status} ${error} ${message}`)
   const geofenceOutside = /outside\s+office\s+geofence|outside\s+geofence/i.test(`${status} ${error} ${message}`)
   const attendanceStatusLabel = todayCheckedIn
     ? (checkedOutAtText
@@ -2513,7 +2719,9 @@ function UserPage() {
       : `Checked In at ${checkedInAtText}`)
     : 'Not Checked In'
   const cameraStatusLabel = cameraOn ? 'Camera Active' : 'Camera Stopped'
-  const locationStatusLabel = geofenceOutside ? 'Outside Geofence' : 'Inside Office'
+  const locationStatusLabel = geofenceDisabled
+    ? 'Location Disabled by Admin'
+    : (geofenceOutside ? 'Outside Geofence' : 'Inside Office')
 
   return (
     <main className="page attendance-shell">
@@ -2525,7 +2733,9 @@ function UserPage() {
           <p className="muted small">Name: {employee?.name || '-'} • Username: {employee?.login_id || '-'}</p>
           <div className="attendance-status-badges">
             <span className={`status-badge ${cameraOn ? 'ok' : ''}`}>Camera: {cameraOn ? 'Ready' : 'Off'}</span>
-            <span className={`status-badge ${locationReady ? 'ok' : ''}`}>Location: {locationReady ? 'Ready' : 'Missing'}</span>
+            <span className={`status-badge ${geofenceDisabled ? '' : (locationReady ? 'ok' : '')}`}>
+              Location: {geofenceDisabled ? 'Disabled by Admin' : (locationReady ? 'Ready' : 'Missing')}
+            </span>
           </div>
         </div>
       </section>
@@ -2549,7 +2759,7 @@ function UserPage() {
                   <span className="status-label">Camera Status</span>
                   <strong>{cameraStatusLabel}</strong>
                 </div>
-                <div className={`status-card ${geofenceOutside ? 'warn' : 'ok'}`}>
+                <div className={`status-card ${(geofenceOutside || geofenceDisabled) ? 'warn' : 'ok'}`}>
                   <span className="status-label">Location Status</span>
                   <strong>{locationStatusLabel}</strong>
                 </div>

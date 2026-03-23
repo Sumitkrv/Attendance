@@ -36,9 +36,11 @@ class FaceRecognizer:
         self.scan_required_blink_count = max(1, env_int("SCAN_REQUIRED_BLINK_COUNT", 1))
         self.scan_resize_width = max(320, env_int("SCAN_RESIZE_WIDTH", 480))
         self.scan_face_upsample_times = max(0, env_int("SCAN_FACE_UPSAMPLE_TIMES", 0))
+        scan_model = str(os.getenv("SCAN_FACE_DETECTION_MODEL", "hog")).strip().lower()
+        self.scan_face_detection_model = "cnn" if scan_model == "cnn" else "hog"
         self.scan_min_face_area_ratio = max(0.005, env_float("SCAN_MIN_FACE_AREA_RATIO", 0.03))
         self.scan_edge_margin_ratio = max(0.0, env_float("SCAN_EDGE_MARGIN_RATIO", 0.02))
-        self.scan_expected_tolerance = env_float("SCAN_EXPECTED_TOLERANCE", 0.66)
+        self.scan_expected_tolerance = env_float("SCAN_EXPECTED_TOLERANCE", 0.58)
         self.scan_expected_margin = env_float("SCAN_EXPECTED_MARGIN", 0.03)
         self.guard = LivenessAndSpoofGuard(
             blink_consec_frames=max(1, env_int("LIVENESS_BLINK_CONSEC_FRAMES", 1)),
@@ -48,6 +50,7 @@ class FaceRecognizer:
 
         self._known_encodings = []
         self._known_names = []
+        self._known_name_keys = []
         self._encodings_by_name = {}
         self._model_mtime_ns = None
         self._running = False
@@ -110,6 +113,7 @@ class FaceRecognizer:
             "scan_required_blink_count": self.scan_required_blink_count,
             "scan_resize_width": self.scan_resize_width,
             "scan_face_upsample_times": self.scan_face_upsample_times,
+            "scan_face_detection_model": self.scan_face_detection_model,
             "scan_min_face_area_ratio": self.scan_min_face_area_ratio,
             "scan_edge_margin_ratio": self.scan_edge_margin_ratio,
             "scan_expected_tolerance": self.scan_expected_tolerance,
@@ -138,6 +142,9 @@ class FaceRecognizer:
             self.scan_resize_width = max(320, int(payload["scan_resize_width"]))
         if "scan_face_upsample_times" in payload:
             self.scan_face_upsample_times = max(0, int(payload["scan_face_upsample_times"]))
+        if "scan_face_detection_model" in payload:
+            model_value = str(payload["scan_face_detection_model"] or "hog").strip().lower()
+            self.scan_face_detection_model = "cnn" if model_value == "cnn" else "hog"
         if "scan_min_face_area_ratio" in payload:
             self.scan_min_face_area_ratio = max(0.005, float(payload["scan_min_face_area_ratio"]))
         if "scan_edge_margin_ratio" in payload:
@@ -173,6 +180,7 @@ class FaceRecognizer:
             raise ValueError("Model has no encodings. Retrain with valid dataset images.")
 
         self._known_encodings = np.array(self._known_encodings)
+        self._known_name_keys = [str(x).strip().lower() for x in self._known_names]
         grouped = {}
         for idx, person_name in enumerate(self._known_names):
             key = str(person_name).strip().lower()
@@ -353,18 +361,18 @@ class FaceRecognizer:
         locations = face_recognition.face_locations(
             rgb,
             number_of_times_to_upsample=first_upsample,
-            model=self.face_detection_model,
+            model=self.scan_face_detection_model,
         )
         second_upsample = max(1, first_upsample)
         should_try_fallback = (
             not locations
-            and (self.face_detection_model != "hog" or second_upsample != first_upsample)
+            and (second_upsample != first_upsample)
         )
         if should_try_fallback:
             locations = face_recognition.face_locations(
                 rgb,
                 number_of_times_to_upsample=second_upsample,
-                model="hog",
+                model=self.scan_face_detection_model,
             )
 
         if not locations:
@@ -429,13 +437,28 @@ class FaceRecognizer:
             expected_best_distance = float(expected_distances.min())
             expected_sample_count = int(len(expected_encodings))
 
-            expected_threshold = max(float(self.scan_expected_tolerance), float(scan_tolerance))
+            expected_threshold = min(float(self.scan_expected_tolerance), float(scan_tolerance))
             # New users may have fewer images initially; allow a small temporary cushion.
             if expected_sample_count < 3:
-                expected_threshold = min(0.72, expected_threshold + 0.04)
+                expected_threshold = min(0.62, expected_threshold + 0.03)
+
+            all_distances = face_recognition.face_distance(self._known_encodings, face_encoding)
+            overall_best_distance = float(all_distances.min()) if len(all_distances) else 1.0
+            overall_best_index = int(all_distances.argmin()) if len(all_distances) else -1
+            overall_best_key = (
+                self._known_name_keys[overall_best_index]
+                if 0 <= overall_best_index < len(self._known_name_keys)
+                else ""
+            )
+            expected_margin = max(0.0, float(self.scan_expected_margin))
+
+            if overall_best_key and overall_best_key != expected_key and overall_best_distance <= (expected_best_distance + expected_margin):
+                self._set_event("error", "User face is not matching", status="wrong_data")
+                return {"status": "wrong_data", "message": "User face is not matching"}
+
             if expected_best_distance > expected_threshold:
-                self._set_event("error", "Wrong data: face does not match logged-in user", status="wrong_data")
-                return {"status": "wrong_data", "message": "Wrong data: face does not match logged-in user"}
+                self._set_event("error", "User face is not matching", status="wrong_data")
+                return {"status": "wrong_data", "message": "User face is not matching"}
 
             best_match_distance = expected_best_distance
             name = expected_name
@@ -450,8 +473,8 @@ class FaceRecognizer:
             name = self._known_names[best_match_index]
 
             if best_match_distance > scan_tolerance:
-                self._set_event("error", "Wrong data: face not matched", status="wrong_data")
-                return {"status": "wrong_data", "message": "Wrong data: face not matched"}
+                self._set_event("error", "User face is not matching", status="wrong_data")
+                return {"status": "wrong_data", "message": "User face is not matching"}
 
         if self.enable_liveness:
             top, right, bottom, left = best_location
@@ -460,23 +483,33 @@ class FaceRecognizer:
             bottom = min(frame_for_scan.shape[0], max(top + 1, bottom))
             right = min(frame_for_scan.shape[1], max(left + 1, right))
             face_roi = frame_for_scan[top:bottom, left:right]
-            need_landmarks = bool(self.scan_require_blink) or challenge_action in {"blink", "blink_and_turn", "turn"}
+            liveness_key = expected_name or name
+            blink_already_seen = False
+            try:
+                blink_already_seen = bool(self.guard.has_blink(liveness_key))
+            except Exception:
+                blink_already_seen = False
+
+            need_landmarks = (
+                bool(self.scan_require_blink)
+                or challenge_action in {"blink", "blink_and_turn", "turn"}
+                or not blink_already_seen
+            )
             landmarks = {}
             if need_landmarks:
                 landmarks_list = face_recognition.face_landmarks(rgb, [best_location])
                 landmarks = landmarks_list[0] if landmarks_list else {}
 
-            liveness_key = expected_name or name
             is_live, meta = self.guard.verify(liveness_key, face_roi, landmarks, best_location)
             head_offset = self._head_turn_offset(landmarks, best_location)
             ear = float(meta.get("ear") or 0.0)
             ear_threshold = float(meta.get("ear_threshold") or 0.21)
             closed_eye_frame = ear > 0 and ear_threshold > 0 and ear <= (ear_threshold * 0.92)
             has_blink = int(meta.get("blink_count") or 0) >= 1 or closed_eye_frame
-            has_movement = bool(meta.get("movement_ok")) or abs(head_offset) >= 0.02
+            has_movement = bool(meta.get("movement_ok")) or abs(head_offset) >= 0.012
 
-            # When blink is required, enforce both blink and movement.
-            if self.scan_require_blink and not (has_blink and has_movement):
+            # Enforce mandatory blink + movement for attendance marking.
+            if not (has_blink and has_movement):
                 self._set_event("error", "Wrong data: blink and movement required", status="wrong_data")
                 return {
                     "status": "wrong_data",
@@ -488,7 +521,7 @@ class FaceRecognizer:
                 strong_match_pass = best_match_distance <= strong_match_threshold
                 blink_met = int(meta.get("blink_count") or 0) >= int(self.scan_required_blink_count) or closed_eye_frame
                 texture_ok = bool(meta.get("texture_ok"))
-                movement_met = (bool(meta.get("movement_ok")) or abs(head_offset) >= 0.02) and strong_match_pass
+                movement_met = (bool(meta.get("movement_ok")) or abs(head_offset) >= 0.012) and strong_match_pass
                 strict_live = bool(blink_met and movement_met and (texture_ok or strong_match_pass))
                 if not strict_live:
                     self._set_event("error", "Wrong data: liveness check failed (blink required)", status="wrong_data")
@@ -513,7 +546,7 @@ class FaceRecognizer:
                 challenge_ok = bool(
                     meta.get("texture_ok")
                     and meta.get("blink_ok")
-                    and (meta.get("movement_ok") or abs(head_offset) >= 0.02)
+                    and (meta.get("movement_ok") or abs(head_offset) >= 0.012)
                 )
                 if not challenge_ok:
                     self._set_event("error", "Wrong data: live challenge failed", status="wrong_data")
@@ -522,7 +555,7 @@ class FaceRecognizer:
                         "message": "Live challenge failed. Blink and turn your head slightly, then try again.",
                     }
             elif challenge_action == "turn":
-                if not bool(meta.get("texture_ok") and (meta.get("movement_ok") or abs(head_offset) >= 0.02)):
+                if not bool(meta.get("texture_ok") and (meta.get("movement_ok") or abs(head_offset) >= 0.012)):
                     self._set_event("error", "Wrong data: live challenge failed", status="wrong_data")
                     return {
                         "status": "wrong_data",

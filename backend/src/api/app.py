@@ -186,6 +186,26 @@ def _validate_password_policy(password: str, label: str = "Password") -> Optiona
     return None
 
 
+def _validate_login_id(login_id: str) -> Optional[str]:
+    value = str(login_id or "").strip().lower()
+    if not value:
+        return "Login ID is required"
+    if len(value) < 3 or len(value) > 32:
+        return "Login ID must be between 3 and 32 characters"
+    if not re.fullmatch(r"[a-z0-9._-]+", value):
+        return "Login ID can contain only lowercase letters, numbers, dot, underscore, and hyphen"
+    return None
+
+
+def _validate_department(department: str) -> Optional[str]:
+    value = str(department or "General").strip()
+    if not value:
+        return "Department is required"
+    if len(value) > 64:
+        return "Department must be at most 64 characters"
+    return None
+
+
 @app.after_request
 def _set_security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -294,7 +314,13 @@ def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> flo
 def _validate_scan_location():
     geofence_active = bool(enable_office_geofence) or bool(force_office_geofence)
     if not geofence_active:
-        return {"enabled": False, "ok": True}
+        return {
+            "enabled": False,
+            "ok": False,
+            "code": 403,
+            "status": "geofence_disabled",
+            "message": "Location verification is disabled by admin. Enable geofence in admin settings to mark attendance.",
+        }
 
     if office_lat is None or office_lng is None:
         return {
@@ -610,13 +636,12 @@ def _bootstrap_employee_credentials():
 
         if not (row.get("password_hash") or "").strip():
             update["password_hash"] = build_password_hash(default_password)
-            update["password_visible_for_admin"] = default_password
             update["must_change_password"] = True
             update["password_updated_by"] = "admin"
             update["password_updated_at"] = now
 
-        if "password_visible_for_admin" not in row and bool(row.get("must_change_password", True)):
-            update["password_visible_for_admin"] = default_password
+        if "password_visible_for_admin" not in row:
+            update["password_visible_for_admin"] = ""
 
         if "must_change_password" not in row:
             update["must_change_password"] = True
@@ -1707,6 +1732,14 @@ def register_employee():
     if not login_id:
         return jsonify({"message": "Login ID is required"}), 400
 
+    login_issue = _validate_login_id(login_id)
+    if login_issue:
+        return jsonify({"message": login_issue}), 400
+
+    dept_issue = _validate_department(department)
+    if dept_issue:
+        return jsonify({"message": dept_issue}), 400
+
     password_issue = _validate_password_policy(password)
     if password_issue:
         return jsonify({"message": password_issue}), 400
@@ -1916,6 +1949,12 @@ def scan_attendance():
     if claims.get("must_change_password"):
         return jsonify({"status": "password_change_required", "message": "Please change password before attendance scan"}), 403
 
+    if not bool(enable_office_geofence) and not bool(force_office_geofence):
+        return jsonify({
+            "status": "geofence_disabled",
+            "message": "Location verification is disabled by admin. Enable geofence in admin settings to mark attendance.",
+        }), 403
+
     location_check = _validate_scan_location()
     if not location_check.get("ok", False):
         code = int(location_check.get("code") or 400)
@@ -1957,15 +1996,31 @@ def scan_attendance():
             try:
                 from bson import ObjectId
                 row = db.employees.find_one({"_id": ObjectId(employee_id)})
-                if row and row.get("name"):
-                    expected_name = row.get("name")
+                if not row or not row.get("name"):
+                    return jsonify({"status": "wrong_data", "message": "Invalid user session"}), 401
+                expected_name = row.get("name")
             except Exception:
-                pass
+                return jsonify({"status": "wrong_data", "message": "Invalid user session"}), 401
+
+        if not str(expected_name or "").strip():
+            return jsonify({"status": "wrong_data", "message": "Invalid user session"}), 401
+
         result = face_recognizer.scan_frame(
             frame,
             expected_name=expected_name,
             challenge_action=challenge_action,
         )
+
+        normalized_expected = str(expected_name or "").strip().lower()
+        normalized_detected = str(result.get("employee_name") or "").strip().lower()
+        if (
+            normalized_expected
+            and normalized_detected
+            and normalized_expected != normalized_detected
+            and result.get("status") in {"checked_in", "checked_out", "already_recorded"}
+        ):
+            return jsonify({"status": "wrong_data", "message": "User face is not matching"}), 422
+
         if (
             result.get("status") == "wrong_data"
             and (
@@ -2294,8 +2349,8 @@ def update_geofence_settings():
     except (TypeError, ValueError):
         return jsonify({"message": "Invalid geofence payload"}), 400
 
-    if next_radius is None or next_radius <= 0:
-        return jsonify({"message": "Office radius must be greater than 0"}), 400
+    if next_radius is None or next_radius < 50 or next_radius > 1000:
+        return jsonify({"message": "Office radius must be between 50 and 1000 meters"}), 400
 
     if next_lat is not None and (next_lat < -90 or next_lat > 90):
         return jsonify({"message": "Office latitude must be between -90 and 90"}), 400
@@ -2366,6 +2421,14 @@ def update_employee(employee_id):
 
     if not new_login_id:
         return jsonify({"message": "Login ID is required"}), 400
+
+    login_issue = _validate_login_id(new_login_id)
+    if login_issue:
+        return jsonify({"message": login_issue}), 400
+
+    dept_issue = _validate_department(new_department)
+    if dept_issue:
+        return jsonify({"message": dept_issue}), 400
 
     from bson import ObjectId
     from bson.errors import InvalidId
