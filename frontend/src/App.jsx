@@ -2675,8 +2675,8 @@ function UserPage() {
     scanInFlightRef.current = true
 
     try {
-      setChallengeInstruction('Blink your eyes and move slightly to mark your attendance.')
-      setStatus('Blink your eyes and move slightly to mark your attendance.')
+      setChallengeInstruction('Blink once and move your face slightly to mark attendance.')
+      setStatus('Blink once and move your face slightly to mark attendance.')
       const canvas = canvasRef.current
       const video = videoRef.current
       const srcW = video.videoWidth || 640
@@ -2687,7 +2687,7 @@ function UserPage() {
       canvas.height = Math.max(1, Math.round(srcH * scale))
       const ctx = canvas.getContext('2d')
       const minScanMs = 2000
-      const attemptGapMs = 420
+      const attemptGapMs = 300
       const startedAt = Date.now()
       let data = null
       let lastErr = null
@@ -2708,6 +2708,7 @@ function UserPage() {
             method: 'POST',
             body: formData,
           }, token)
+          if (data) break
         } catch (err) {
           lastErr = err
         }
@@ -2720,7 +2721,7 @@ function UserPage() {
 
       if (!data) {
         if (lastErr) throw lastErr
-        throw new Error('Blink your eyes and move slightly to mark your attendance, then retry.')
+        throw new Error('Unable to scan attendance. Please retry.')
       }
 
       if (data?.status) {
