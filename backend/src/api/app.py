@@ -357,8 +357,8 @@ def _disable_legacy_backend_ui_routes():
 
     redirect_map = {
         "/": FRONTEND_APP_BASE_URL,
-        "/admin": f"{FRONTEND_APP_BASE_URL}/admin",
-        "/user": f"{FRONTEND_APP_BASE_URL}/user",
+        "/admin": f"{FRONTEND_APP_BASE_URL}/#/admin",
+        "/user": f"{FRONTEND_APP_BASE_URL}/#/user",
     }
     return redirect(redirect_map[path], code=302)
 
