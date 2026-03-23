@@ -1,4 +1,4 @@
-#!/Users/sumitthakur/Desktop/Attendance/face-attendance-system/backend/.venv/bin/python
+#!/Users/sumitthakur/Downloads/Attendance-main/backend/.venv/bin/python
 import sys
 from numpy.f2py.f2py2e import main
 if __name__ == '__main__':
