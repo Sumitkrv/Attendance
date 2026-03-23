@@ -8,9 +8,11 @@ import uuid
 import time
 import json
 import logging
+import hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
 from bson import json_util
+from bson.binary import Binary
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -214,6 +216,11 @@ max_upload_mb = float(os.getenv("MAX_CONTENT_LENGTH_MB", "10"))
 app.config["MAX_CONTENT_LENGTH"] = int(max_upload_mb * 1024 * 1024)
 
 rate_limit_storage_uri = str(os.getenv("RATE_LIMIT_STORAGE_URI", "memory://")).strip() or "memory://"
+sync_model_artifact = str(
+    os.getenv("SYNC_MODEL_ARTIFACT", "true" if APP_ENV in {"prod", "staging"} else "false")
+).strip().lower() in {"1", "true", "yes", "on"}
+model_artifact_max_mb = max(1.0, float(os.getenv("MODEL_ARTIFACT_MAX_MB", "14")))
+MODEL_ARTIFACT_KEY = "trained_model_artifact"
 limiter = Limiter(
     get_remote_address,
     app=app,
@@ -740,6 +747,109 @@ def _persist_recognition_settings():
     persist_mock_db_now()
 
 
+def _persist_model_artifact_to_db() -> bool:
+    if not sync_model_artifact:
+        return False
+
+    try:
+        if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size <= 0:
+            return False
+
+        size_bytes = int(MODEL_PATH.stat().st_size)
+        max_bytes = int(model_artifact_max_mb * 1024 * 1024)
+        if size_bytes > max_bytes:
+            logger.warning(
+                "model_artifact_skip_large",
+                extra={
+                    "event": "model_artifact_skip_large",
+                    "size_bytes": size_bytes,
+                    "max_bytes": max_bytes,
+                },
+            )
+            return False
+
+        payload = MODEL_PATH.read_bytes()
+        sha256 = hashlib.sha256(payload).hexdigest()
+        db.settings.update_one(
+            {"key": MODEL_ARTIFACT_KEY},
+            {
+                "$set": {
+                    "key": MODEL_ARTIFACT_KEY,
+                    "value": {
+                        "filename": MODEL_PATH.name,
+                        "size_bytes": size_bytes,
+                        "sha256": sha256,
+                        "blob": Binary(payload),
+                    },
+                    "updated_at": datetime.now(),
+                }
+            },
+            upsert=True,
+        )
+        persist_mock_db_now()
+        return True
+    except Exception as exc:
+        logger.warning(
+            "model_artifact_persist_failed",
+            extra={
+                "event": "model_artifact_persist_failed",
+                "error": str(exc),
+            },
+        )
+        return False
+
+
+def _restore_model_artifact_from_db_if_missing() -> bool:
+    if not sync_model_artifact:
+        return False
+
+    try:
+        if MODEL_PATH.exists() and MODEL_PATH.stat().st_size > 0:
+            return False
+    except Exception:
+        pass
+
+    try:
+        doc = db.settings.find_one({"key": MODEL_ARTIFACT_KEY}) or {}
+        value = doc.get("value") or {}
+        blob = value.get("blob")
+        if blob is None:
+            return False
+
+        raw = bytes(blob)
+        if not raw:
+            return False
+
+        ensure_dir(MODEL_PATH.parent)
+        tmp_path = MODEL_PATH.with_suffix(MODEL_PATH.suffix + ".tmp")
+        tmp_path.write_bytes(raw)
+        tmp_path.replace(MODEL_PATH)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "model_artifact_restore_failed",
+            extra={
+                "event": "model_artifact_restore_failed",
+                "error": str(exc),
+            },
+        )
+        return False
+
+
+def _sync_model_artifact_on_boot():
+    if not sync_model_artifact:
+        return
+
+    restored = _restore_model_artifact_from_db_if_missing()
+    if restored:
+        logger.info("model_artifact_restored", extra={"event": "model_artifact_restored"})
+        return
+
+    persisted = _persist_model_artifact_to_db()
+    if persisted:
+        logger.info("model_artifact_persisted", extra={"event": "model_artifact_persisted"})
+
+
 def _load_recognition_settings_from_db():
     doc = db.settings.find_one({"key": "recognition"}) or {}
     value = doc.get("value") or {}
@@ -814,6 +924,7 @@ def _bootstrap_employee_credentials():
 load_mock_db_dump()
 _load_geofence_settings_from_db()
 _bootstrap_employee_credentials()
+_sync_model_artifact_on_boot()
 attendance_manager = AttendanceManager(db, on_change=persist_mock_db_now)
 face_recognizer = FaceRecognizer(attendance_manager=attendance_manager, model_path=str(MODEL_PATH))
 _load_recognition_settings_from_db()
@@ -855,6 +966,7 @@ def _run_training_job(job_id: str):
     try:
         trainer = ModelTrainer(str(DATASET_PATH), str(MODEL_PATH))
         result = trainer.train(progress_callback=progress_callback)
+        _persist_model_artifact_to_db()
         _update_train_state(
             running=False,
             progress=100,
