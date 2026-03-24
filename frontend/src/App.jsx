@@ -2403,6 +2403,71 @@ function UserPage() {
     setRetryLabel('')
   }
 
+  function isMobileViewport() {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+    return window.matchMedia('(max-width: 720px)').matches
+  }
+
+  async function attachPrimaryStreamPreview() {
+    const video = videoRef.current
+    const stream = streamRef.current
+    if (!video || !stream) return
+    if (video.srcObject !== stream) {
+      video.srcObject = stream
+    }
+    video.setAttribute('playsinline', 'true')
+    video.muted = true
+    try {
+      await video.play()
+    } catch {
+      // browser may block autoplay until user interaction; keep stream attached
+    }
+  }
+
+  async function requestUserCameraStream(kind = 'attendance') {
+    const mobile = isMobileViewport()
+    const base = {
+      audio: false,
+    }
+    const attempts = kind === 'manual'
+      ? [
+          {
+            ...base,
+            video: {
+              facingMode: { ideal: 'user' },
+              width: mobile ? { ideal: 540, max: 720 } : { ideal: 640, max: 960 },
+              height: mobile ? { ideal: 720, max: 960 } : { ideal: 480, max: 720 },
+              frameRate: { ideal: 20, max: 24 },
+            },
+          },
+          { ...base, video: { facingMode: 'user' } },
+          { ...base, video: true },
+        ]
+      : [
+          {
+            ...base,
+            video: {
+              facingMode: { ideal: 'user' },
+              width: mobile ? { ideal: 360, max: 480 } : { ideal: 480, max: 640 },
+              height: mobile ? { ideal: 480, max: 640 } : { ideal: 360, max: 480 },
+              frameRate: { ideal: mobile ? 16 : 20, max: 24 },
+            },
+          },
+          { ...base, video: { facingMode: 'user' } },
+          { ...base, video: true },
+        ]
+
+    let lastErr = null
+    for (const constraints of attempts) {
+      try {
+        return await navigator.mediaDevices.getUserMedia(constraints)
+      } catch (err) {
+        lastErr = err
+      }
+    }
+    throw lastErr || new Error('Camera not accessible')
+  }
+
   async function attachManualStreamPreview() {
     const video = manualVideoRef.current
     const stream = manualStreamRef.current
@@ -2510,19 +2575,9 @@ function UserPage() {
 
   async function startCamera() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 480, max: 640 },
-          height: { ideal: 360, max: 480 },
-          frameRate: { ideal: 20, max: 24 },
-          facingMode: 'user',
-        },
-        audio: false,
-      })
+      const stream = await requestUserCameraStream('attendance')
       streamRef.current = stream
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-      }
+      await attachPrimaryStreamPreview()
       await updateLocation()
       setCameraOn(true)
       setStatus('Camera started')
@@ -2540,15 +2595,7 @@ function UserPage() {
 
   async function startManualCamera() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640, max: 960 },
-          height: { ideal: 480, max: 720 },
-          frameRate: { ideal: 24, max: 30 },
-          facingMode: 'user',
-        },
-        audio: false,
-      })
+      const stream = await requestUserCameraStream('manual')
       manualStreamRef.current = stream
       setManualCameraOn(true)
       await attachManualStreamPreview()
@@ -2675,16 +2722,22 @@ function UserPage() {
     scanInFlightRef.current = true
 
     try {
-      setChallengeInstruction('Blink once and move your face slightly to mark attendance.')
-      setStatus('Blink once and move your face slightly to mark attendance.')
+      setChallengeInstruction('Keep your face centered and hold steady for a moment.')
+      setStatus('Keep your face centered and hold steady for a moment.')
       const canvas = canvasRef.current
       const video = videoRef.current
       const srcW = video.videoWidth || 640
       const srcH = video.videoHeight || 480
-      const maxW = 420
-      const scale = srcW > maxW ? maxW / srcW : 1
-      canvas.width = Math.max(1, Math.round(srcW * scale))
-      canvas.height = Math.max(1, Math.round(srcH * scale))
+      const mobile = isMobileViewport()
+      const cropFactor = mobile ? 0.82 : 1
+      const cropW = Math.max(1, Math.round(srcW * cropFactor))
+      const cropH = Math.max(1, Math.round(srcH * cropFactor))
+      const cropX = Math.max(0, Math.round((srcW - cropW) / 2))
+      const cropY = Math.max(0, Math.round((srcH - cropH) / 2))
+      const maxW = mobile ? 320 : 420
+      const scale = cropW > maxW ? maxW / cropW : 1
+      canvas.width = Math.max(1, Math.round(cropW * scale))
+      canvas.height = Math.max(1, Math.round(cropH * scale))
       const ctx = canvas.getContext('2d')
       const minScanMs = 2000
       const attemptGapMs = 300
@@ -2694,8 +2747,8 @@ function UserPage() {
 
       while (Date.now() - startedAt < minScanMs) {
         try {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.74))
+          ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, canvas.width, canvas.height)
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', mobile ? 0.66 : 0.74))
           const formData = new FormData()
           formData.append('image', blob, 'scan.jpg')
           if (geo.lat && geo.lng) {
@@ -2754,11 +2807,8 @@ function UserPage() {
         stopCamera()
       }
     } catch (err) {
+      clearRetryAction()
       setError(err.message)
-      if (isRetryableError(err)) {
-        setRetryLabel('Retry attendance scan')
-        setRetryAction(() => () => checkInNow(silent))
-      }
       if (!silent) {
         showPopup('error', 'Scan Failed', err.message)
       }
@@ -3068,7 +3118,7 @@ function UserPage() {
                   <span className="muted small">{cameraOn ? 'Camera active' : 'Camera off'}</span>
                 </div>
                 <div className="camera-preview-box">
-                  <video ref={videoRef} autoPlay playsInline className="preview" />
+                  <video ref={videoRef} autoPlay playsInline muted className="preview" />
                   {!cameraOn && <div className="camera-placeholder">Camera not started</div>}
                 </div>
               </div>

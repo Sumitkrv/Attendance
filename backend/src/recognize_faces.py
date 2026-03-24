@@ -535,7 +535,7 @@ class FaceRecognizer:
                 self._set_event("error", "Wrong data: blink and movement required", status="wrong_data")
                 return {
                     "status": "wrong_data",
-                    "message": "Please blink once and move your face slightly, then try again.",
+                    "message": "Face verification failed. Keep your face centered and retry.",
                 }
 
             if elapsed_sec < float(self.scan_min_duration_seconds):
