@@ -2739,7 +2739,7 @@ function UserPage() {
       canvas.width = Math.max(1, Math.round(cropW * scale))
       canvas.height = Math.max(1, Math.round(cropH * scale))
       const ctx = canvas.getContext('2d')
-      const minScanMs = 2000
+      const minScanMs = 1200
       const attemptGapMs = 300
       const startedAt = Date.now()
       let data = null

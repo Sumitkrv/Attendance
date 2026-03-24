@@ -530,22 +530,23 @@ class FaceRecognizer:
             has_movement = bool(meta.get("movement_ok")) or abs(head_offset) >= 0.012
             elapsed_sec = float(meta.get("elapsed_sec") or 0.0)
 
-            # Enforce mandatory blink + movement for attendance marking.
-            if not (has_blink and has_movement):
-                self._set_event("error", "Wrong data: blink and movement required", status="wrong_data")
+            # Liveness gate:
+            # - when blink is required by policy, require both blink + movement.
+            # - otherwise allow either blink or movement (with texture check) for faster UX.
+            texture_ok = bool(meta.get("texture_ok"))
+            liveness_gate_ok = (has_blink and has_movement) if self.scan_require_blink else ((has_blink or has_movement) and texture_ok)
+            if not liveness_gate_ok:
+                self._set_event("error", "Wrong data: liveness gate not met", status="wrong_data")
                 return {
                     "status": "wrong_data",
-                    "message": "Face verification failed. Keep your face centered and retry.",
+                    "message": "Unable to verify face. Please retry.",
                 }
 
             if elapsed_sec < float(self.scan_min_duration_seconds):
                 self._set_event("error", "Wrong data: hold steady for minimum scan time", status="wrong_data")
                 return {
                     "status": "wrong_data",
-                    "message": (
-                        f"Keep scanning for at least {self.scan_min_duration_seconds:.1f}s "
-                        "while blinking once and moving slightly."
-                    ),
+                    "message": f"Keep scanning for at least {self.scan_min_duration_seconds:.1f}s and retry.",
                 }
 
             if self.scan_require_blink:
