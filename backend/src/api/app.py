@@ -21,6 +21,7 @@ import numpy as np
 import face_recognition
 from dotenv import load_dotenv
 from flask import Flask, g, jsonify, request, render_template_string, redirect
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -62,6 +63,16 @@ try:
 except Exception:
     sentry_sdk = None
     FlaskIntegration = None
+
+try:
+    import orjson
+except Exception:
+    orjson = None
+
+try:
+    from flask_compress import Compress
+except Exception:
+    Compress = None
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
@@ -203,7 +214,25 @@ def _validate_required_prod_env():
 
 _validate_required_prod_env()
 
+
+class _OrjsonProvider(DefaultJSONProvider):
+    def dumps(self, obj, **kwargs):
+        if orjson is None:
+            return super().dumps(obj, **kwargs)
+        return orjson.dumps(obj).decode("utf-8")
+
+    def loads(self, s: str | bytes, **kwargs):
+        if orjson is None:
+            return super().loads(s, **kwargs)
+        if isinstance(s, str):
+            s = s.encode("utf-8")
+        return orjson.loads(s)
+
+
 app = Flask(__name__)
+if orjson is not None:
+    app.json_provider_class = _OrjsonProvider
+    app.json = app.json_provider_class(app)
 
 allowed_origins = [
     origin.strip()
@@ -211,6 +240,12 @@ allowed_origins = [
     if origin.strip()
 ]
 CORS(app, resources={r"/*": {"origins": allowed_origins}})
+
+if Compress is not None:
+    app.config["COMPRESS_ALGORITHM"] = ["gzip"]
+    app.config["COMPRESS_LEVEL"] = int(os.getenv("GZIP_LEVEL", "6"))
+    app.config["COMPRESS_MIN_SIZE"] = int(os.getenv("GZIP_MIN_SIZE", "1024"))
+    Compress(app)
 
 max_upload_mb = float(os.getenv("MAX_CONTENT_LENGTH_MB", "10"))
 app.config["MAX_CONTENT_LENGTH"] = int(max_upload_mb * 1024 * 1024)
@@ -376,9 +411,19 @@ def _env_float(name: str, default=None):
 office_lat = _env_float("OFFICE_LAT", None)
 office_lng = _env_float("OFFICE_LNG", None)
 office_radius_meters = _env_float("OFFICE_RADIUS_METERS", 500.0)
+location_max_age_seconds = max(5, int(os.getenv("LOCATION_MAX_AGE_SECONDS", "25")))
+max_reported_accuracy_meters = max(15.0, float(os.getenv("MAX_REPORTED_GPS_ACCURACY_METERS", "300")))
 scan_challenge_ttl_seconds = int(os.getenv("SCAN_CHALLENGE_TTL_SECONDS", "18"))
 scan_challenge_lock = threading.Lock()
 scan_challenges = {}
+
+scan_result_cache_ttl_seconds = max(1.0, float(os.getenv("SCAN_RESULT_CACHE_TTL_SECONDS", "2.5")))
+scan_result_cache = {}
+scan_result_cache_lock = threading.Lock()
+
+employee_session_cache_ttl_seconds = max(10.0, float(os.getenv("EMPLOYEE_SESSION_CACHE_TTL_SECONDS", "120")))
+employee_session_cache = {}
+employee_session_cache_lock = threading.Lock()
 
 mock_persist_lock = threading.Lock()
 
@@ -443,6 +488,73 @@ def _consume_scan_challenge(challenge_id: str, claims: dict):
     return {"ok": True, "action": item.get("action"), "instruction": item.get("instruction")}
 
 
+def _parse_location_captured_at_ms(raw_value) -> Optional[int]:
+    try:
+        value = int(float(raw_value))
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def _get_cached_employee_name(employee_id: str) -> Optional[str]:
+    if not str(employee_id or "").strip():
+        return None
+
+    now_ts = time.time()
+    with employee_session_cache_lock:
+        cached = employee_session_cache.get(employee_id)
+        if cached and cached.get("expires_at", 0) > now_ts:
+            return cached.get("name")
+
+    try:
+        from bson import ObjectId
+
+        row = db.employees.find_one({"_id": ObjectId(employee_id)}, {"name": 1})
+    except Exception:
+        row = None
+
+    name = str((row or {}).get("name") or "").strip()
+    if not name:
+        return None
+
+    with employee_session_cache_lock:
+        employee_session_cache[employee_id] = {
+            "name": name,
+            "expires_at": now_ts + employee_session_cache_ttl_seconds,
+        }
+    return name
+
+
+def _get_scan_result_cache(cache_key: str):
+    now_ts = time.time()
+    with scan_result_cache_lock:
+        cached = scan_result_cache.get(cache_key)
+        if not cached:
+            return None
+        if cached.get("expires_at", 0) <= now_ts:
+            scan_result_cache.pop(cache_key, None)
+            return None
+        return dict(cached.get("payload") or {})
+
+
+def _set_scan_result_cache(cache_key: str, payload: dict):
+    if not cache_key:
+        return
+    now_ts = time.time()
+    with scan_result_cache_lock:
+        scan_result_cache[cache_key] = {
+            "expires_at": now_ts + scan_result_cache_ttl_seconds,
+            "payload": dict(payload or {}),
+        }
+
+        if len(scan_result_cache) > 300:
+            expired_keys = [k for k, v in scan_result_cache.items() if v.get("expires_at", 0) <= now_ts]
+            for key in expired_keys:
+                scan_result_cache.pop(key, None)
+
+
 def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     radius = 6371000.0
     phi1 = math.radians(lat1)
@@ -458,7 +570,7 @@ def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> flo
     return radius * c
 
 
-def _validate_scan_location():
+def _validate_scan_location(claims: Optional[dict] = None):
     geofence_active = bool(enable_office_geofence) or bool(force_office_geofence)
     if not geofence_active:
         return {
@@ -487,6 +599,55 @@ def _validate_scan_location():
             "code": 400,
             "status": "location_required",
             "message": "Location is required for attendance",
+        }
+
+    location_captured_at_ms = _parse_location_captured_at_ms(request.form.get("location_captured_at_ms"))
+    if location_captured_at_ms is None:
+        return {
+            "enabled": True,
+            "ok": False,
+            "code": 400,
+            "status": "location_timestamp_required",
+            "message": "Fresh location timestamp is required for attendance",
+        }
+
+    now_ms = int(time.time() * 1000)
+    age_ms = now_ms - location_captured_at_ms
+    if age_ms < -5000 or age_ms > (location_max_age_seconds * 1000):
+        return {
+            "enabled": True,
+            "ok": False,
+            "code": 400,
+            "status": "stale_location",
+            "message": f"Location is too old. Refresh location and retry within {location_max_age_seconds} seconds.",
+            "location_age_ms": age_ms,
+        }
+
+    claims = claims or {}
+    issued_at = claims.get("iat")
+    if issued_at is not None:
+        try:
+            issued_at_ms = int(float(issued_at) * 1000)
+            if location_captured_at_ms < issued_at_ms:
+                return {
+                    "enabled": True,
+                    "ok": False,
+                    "code": 403,
+                    "status": "location_before_login",
+                    "message": "Location must be captured after login",
+                }
+        except (TypeError, ValueError):
+            pass
+
+    location_session_jti = (request.form.get("location_session_jti") or "").strip()
+    token_jti = str(claims.get("jti") or "").strip()
+    if token_jti and location_session_jti != token_jti:
+        return {
+            "enabled": True,
+            "ok": False,
+            "code": 403,
+            "status": "location_session_mismatch",
+            "message": "Location token mismatch. Please login again.",
         }
 
     try:
@@ -518,6 +679,16 @@ def _validate_scan_location():
     except (TypeError, ValueError):
         accuracy = 0.0
 
+    if accuracy > max_reported_accuracy_meters:
+        return {
+            "enabled": True,
+            "ok": False,
+            "code": 403,
+            "status": "low_location_accuracy",
+            "message": f"Location accuracy is too low ({round(accuracy, 1)}m). Move to open sky and retry.",
+            "accuracy_m": round(accuracy, 2),
+        }
+
     # GPS can drift, especially indoors. Add an accuracy grace window.
     # We cap grace to avoid very large spoof-friendly allowances.
     effective_radius_m = allowed_radius_m + min(max(accuracy, 0.0), 200.0)
@@ -545,6 +716,7 @@ def _validate_scan_location():
         "allowed_radius_m": round(allowed_radius_m, 2),
         "effective_radius_m": round(effective_radius_m, 2),
         "accuracy_m": round(accuracy, 2),
+        "location_age_ms": age_ms,
     }
 
 
@@ -929,6 +1101,24 @@ attendance_manager = AttendanceManager(db, on_change=persist_mock_db_now)
 face_recognizer = FaceRecognizer(attendance_manager=attendance_manager, model_path=str(MODEL_PATH))
 _load_recognition_settings_from_db()
 
+
+def _preload_model_on_startup():
+    try:
+        face_recognizer.load_model()
+        logger.info("model_preloaded", extra={"event": "model_preloaded", "app_env": APP_ENV})
+    except Exception as exc:
+        logger.warning(
+            "model_preload_skipped",
+            extra={
+                "event": "model_preload_skipped",
+                "app_env": APP_ENV,
+                "detail": str(exc),
+            },
+        )
+
+
+threading.Thread(target=_preload_model_on_startup, daemon=True).start()
+
 train_lock = threading.Lock()
 train_state = {
     "job_id": None,
@@ -998,6 +1188,7 @@ def _start_training_if_idle() -> Optional[str]:
 @app.get("/health")
 def health_check():
     deps = _dependency_health()
+    model_loaded = bool(len(getattr(face_recognizer, "_known_encodings", [])))
     return jsonify(
         {
             "status": "ok",
@@ -1010,6 +1201,7 @@ def health_check():
             "mock_db_reset_on_start": bool(mock_db_reset_on_start) if using_mock_db else None,
             "rate_limit_storage_uri": rate_limit_storage_uri,
             "sentry_enabled": bool(SENTRY_ENABLED),
+            "model_loaded": model_loaded,
             "dependencies": deps,
         }
     )
@@ -1062,6 +1254,31 @@ def readiness_check():
         ),
         200 if ready else 503,
     )
+
+
+@app.get("/warmup")
+def warmup():
+    started_at = time.perf_counter()
+    try:
+        face_recognizer._ensure_model_loaded()
+        return jsonify(
+            {
+                "status": "ok",
+                "model_loaded": True,
+                "duration_ms": round((time.perf_counter() - started_at) * 1000.0, 2),
+                "time": datetime.now().isoformat(),
+            }
+        )
+    except Exception as exc:
+        return jsonify(
+            {
+                "status": "degraded",
+                "model_loaded": False,
+                "duration_ms": round((time.perf_counter() - started_at) * 1000.0, 2),
+                "message": str(exc),
+                "time": datetime.now().isoformat(),
+            }
+        ), 503
 
 
 @app.get("/security/token_policy")
@@ -2331,14 +2548,14 @@ def scan_attendance():
             "message": "Location verification is disabled by admin. Enable geofence in admin settings to mark attendance.",
         }), 403
 
-    location_check = _validate_scan_location()
+    location_check = _validate_scan_location(claims)
     if not location_check.get("ok", False):
         code = int(location_check.get("code") or 400)
         payload = {
             "status": location_check.get("status") or "location_error",
             "message": location_check.get("message") or "Location validation failed",
         }
-        for key in ("distance_m", "allowed_radius_m", "effective_radius_m", "accuracy_m"):
+        for key in ("distance_m", "allowed_radius_m", "effective_radius_m", "accuracy_m", "location_age_ms"):
             if key in location_check:
                 payload[key] = location_check[key]
         return jsonify(payload), code
@@ -2360,8 +2577,25 @@ def scan_attendance():
     if not raw:
         return jsonify({"status": "wrong_data", "message": "Empty image"}), 400
 
+    cache_digest = hashlib.sha1(raw).hexdigest()
+    cache_key = f"{claims.get('employee_id') or claims.get('login_id')}:{cache_digest}"
+    cached = _get_scan_result_cache(cache_key)
+    if cached:
+        cached["location"] = {
+            "verified": True,
+            "distance_m": location_check.get("distance_m"),
+            "allowed_radius_m": location_check.get("allowed_radius_m"),
+            "effective_radius_m": location_check.get("effective_radius_m"),
+            "accuracy_m": location_check.get("accuracy_m"),
+            "location_age_ms": location_check.get("location_age_ms"),
+        }
+        return jsonify(cached), 200
+
     arr = np.frombuffer(raw, np.uint8)
-    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    decode_flag = cv2.IMREAD_COLOR
+    if len(raw) > 450_000:
+        decode_flag = cv2.IMREAD_REDUCED_COLOR_2
+    frame = cv2.imdecode(arr, decode_flag)
     if frame is None:
         return jsonify({"status": "wrong_data", "message": "Invalid image format"}), 400
 
@@ -2369,13 +2603,8 @@ def scan_attendance():
         expected_name = claims.get("employee_name")
         employee_id = claims.get("employee_id")
         if employee_id:
-            try:
-                from bson import ObjectId
-                row = db.employees.find_one({"_id": ObjectId(employee_id)})
-                if not row or not row.get("name"):
-                    return jsonify({"status": "wrong_data", "message": "Invalid user session"}), 401
-                expected_name = row.get("name")
-            except Exception:
+            expected_name = _get_cached_employee_name(str(employee_id))
+            if not expected_name:
                 return jsonify({"status": "wrong_data", "message": "Invalid user session"}), 401
 
         if not str(expected_name or "").strip():
@@ -2425,6 +2654,7 @@ def scan_attendance():
                 "allowed_radius_m": location_check.get("allowed_radius_m"),
                 "effective_radius_m": location_check.get("effective_radius_m"),
                 "accuracy_m": location_check.get("accuracy_m"),
+                "location_age_ms": location_check.get("location_age_ms"),
             }
         else:
             result["location"] = {
@@ -2436,6 +2666,8 @@ def scan_attendance():
                 "action": challenge_action,
                 "instruction": challenge_instruction,
             }
+        if result.get("status") in {"checked_in", "checked_out", "already_recorded"}:
+            _set_scan_result_cache(cache_key, result)
         code = 200 if result.get("status") != "wrong_data" else 422
         return jsonify(result), code
     except Exception as e:

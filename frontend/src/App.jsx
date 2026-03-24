@@ -9,6 +9,9 @@ const UI_THEME_KEY = 'fa_ui_theme'
 const SESSION_REFRESH_CHECK_MS = 60 * 1000
 const SESSION_REFRESH_BEFORE_MS = 15 * 60 * 1000
 const SESSION_EXPIRING_SOON_MS = 5 * 60 * 1000
+const GEO_TIMEOUT_MS = 10000
+const GEO_MAX_AGE_MS = 0
+const GEO_RETRY_COUNT = 2
 
 function readDarkModePreference() {
   try {
@@ -2386,7 +2389,7 @@ function UserPage() {
   })
   const [challengeInstruction, setChallengeInstruction] = useState('')
   const [popup, setPopup] = useState({ show: false, type: 'success', title: '', message: '' })
-  const [geo, setGeo] = useState({ lat: '', lng: '', accuracy: '' })
+  const [geo, setGeo] = useState({ lat: '', lng: '', accuracy: '', capturedAtMs: '', sessionJti: '' })
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const videoRef = useRef(null)
@@ -2497,6 +2500,7 @@ function UserPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ login_id: values.login_id.toLowerCase(), password: values.password }),
       })
+      await updateLocation({ sessionToken: data.token, enforce: true })
       localStorage.setItem(USER_KEY, data.token)
       setToken(data.token)
       setEmployee(data.employee)
@@ -2508,6 +2512,9 @@ function UserPage() {
       clearRetryAction()
     } catch (err) {
       setError(err.message)
+      localStorage.removeItem(USER_KEY)
+      setToken('')
+      setEmployee(null)
       if (isRetryableError(err)) {
         setRetryLabel('Retry login')
         setRetryAction(() => () => login(values))
@@ -2546,6 +2553,7 @@ function UserPage() {
       return
     }
     try {
+      await updateLocation({ sessionToken: token, enforce: true })
       setEmployee({
         name: payload.employee_name,
         login_id: payload.login_id,
@@ -2553,7 +2561,8 @@ function UserPage() {
         must_change_password: payload.must_change_password,
       })
       await refreshTodayAttendance(token)
-    } catch {
+    } catch (err) {
+      setError(err?.message || 'Location verification failed. Please login again.')
       logout()
     }
   }
@@ -2668,22 +2677,66 @@ function UserPage() {
     }
   }, [darkMode])
 
-  async function updateLocation() {
-    if (!navigator.geolocation) return
-    await new Promise((resolve) => {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setGeo({
-            lat: String(pos.coords.latitude),
-            lng: String(pos.coords.longitude),
-            accuracy: String(pos.coords.accuracy || ''),
-          })
-          resolve()
-        },
-        () => resolve(),
-        { enableHighAccuracy: true, timeout: 8000 }
-      )
-    })
+  function getGeoErrorMessage(err) {
+    const code = Number(err?.code || 0)
+    if (code === 1) return 'Location permission denied. Please allow location to continue.'
+    if (code === 2) return 'Location unavailable. Please enable GPS/network location and retry.'
+    if (code === 3) return 'Location request timed out. Please retry.'
+    return 'Unable to fetch location. Please retry.'
+  }
+
+  async function fetchFreshLocation() {
+    if (!navigator.geolocation) {
+      throw new Error('Location is not supported in this browser.')
+    }
+
+    let lastErr = null
+    for (let i = 0; i <= GEO_RETRY_COUNT; i += 1) {
+      try {
+        const pos = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(
+            resolve,
+            reject,
+            {
+              enableHighAccuracy: true,
+              timeout: GEO_TIMEOUT_MS,
+              maximumAge: GEO_MAX_AGE_MS,
+            },
+          )
+        })
+        return pos
+      } catch (err) {
+        lastErr = err
+        if (Number(err?.code || 0) === 1) break
+      }
+    }
+    throw lastErr || new Error('Unable to fetch location. Please retry.')
+  }
+
+  async function updateLocation(options = {}) {
+    const { sessionToken = token, silent = false, enforce = false } = options
+    try {
+      const pos = await fetchFreshLocation()
+      const claims = decodeToken(sessionToken || '') || {}
+      const nextGeo = {
+        lat: String(pos.coords.latitude),
+        lng: String(pos.coords.longitude),
+        accuracy: String(pos.coords.accuracy || ''),
+        capturedAtMs: String(Date.now()),
+        sessionJti: String(claims.jti || ''),
+      }
+      setGeo(nextGeo)
+      return nextGeo
+    } catch (err) {
+      if (enforce) {
+        setGeo({ lat: '', lng: '', accuracy: '', capturedAtMs: '', sessionJti: '' })
+        throw new Error(getGeoErrorMessage(err))
+      }
+      if (!silent) {
+        setError(getGeoErrorMessage(err))
+      }
+      return null
+    }
   }
 
   async function changePassword() {
@@ -2724,6 +2777,7 @@ function UserPage() {
     try {
       setChallengeInstruction('Keep your face centered and hold steady for a moment.')
       setStatus('Keep your face centered and hold steady for a moment.')
+      const freshGeo = await updateLocation({ sessionToken: token, enforce: true, silent: true })
       const canvas = canvasRef.current
       const video = videoRef.current
       const srcW = video.videoWidth || 640
@@ -2751,11 +2805,13 @@ function UserPage() {
           const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', mobile ? 0.66 : 0.74))
           const formData = new FormData()
           formData.append('image', blob, 'scan.jpg')
-          if (geo.lat && geo.lng) {
-            formData.append('lat', geo.lat)
-            formData.append('lng', geo.lng)
+          if (freshGeo?.lat && freshGeo?.lng) {
+            formData.append('lat', freshGeo.lat)
+            formData.append('lng', freshGeo.lng)
           }
-          if (geo.accuracy) formData.append('accuracy', geo.accuracy)
+          if (freshGeo?.accuracy) formData.append('accuracy', freshGeo.accuracy)
+          if (freshGeo?.capturedAtMs) formData.append('location_captured_at_ms', freshGeo.capturedAtMs)
+          if (freshGeo?.sessionJti) formData.append('location_session_jti', freshGeo.sessionJti)
 
           data = await apiFetch('/scan_attendance', {
             method: 'POST',
@@ -2923,6 +2979,7 @@ function UserPage() {
     setEmployee(null)
     setAttendanceState('')
     setAttendanceTimes({ checkIn: '', checkOut: '' })
+    setGeo({ lat: '', lng: '', accuracy: '', capturedAtMs: '', sessionJti: '' })
     setStatus('Logged out')
     setChallengeInstruction('')
     clearRetryAction()
@@ -3003,7 +3060,14 @@ function UserPage() {
     )
   }
 
-  const locationReady = Boolean(geo.lat && geo.lng)
+  const tokenClaims = decodeToken(token || '') || {}
+  const locationReady = Boolean(
+    geo.lat
+    && geo.lng
+    && geo.capturedAtMs
+    && geo.sessionJti
+    && String(geo.sessionJti) === String(tokenClaims.jti || ''),
+  )
   const statusText = String(status || '')
   const todayCheckedIn = (
     ['checked_in', 'checked_out', 'already_recorded'].includes(String(attendanceState || '').toLowerCase())
