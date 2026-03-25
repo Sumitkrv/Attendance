@@ -361,9 +361,7 @@ class FaceRecognizer:
 
     def scan_frame(self, frame_bgr, expected_name: Optional[str] = None, challenge_action: Optional[str] = None) -> dict:
         """Recognize one frame and mark attendance for user-panel scanning."""
-        try:
-            self._ensure_model_loaded()
-        except Exception:
+        if len(self._known_encodings) == 0:
             self._set_event("error", "No registered users found", status="wrong_data")
             return {"status": "wrong_data", "message": "No registered users found"}
 

@@ -1104,11 +1104,63 @@ _sync_model_artifact_on_boot()
 attendance_manager = AttendanceManager(db, on_change=persist_mock_db_now)
 face_recognizer = FaceRecognizer(attendance_manager=attendance_manager, model_path=str(MODEL_PATH))
 _load_recognition_settings_from_db()
+model_init_lock = threading.Lock()
+model_init_state = {
+    "loaded": False,
+    "warmed": False,
+    "error": None,
+}
+
+
+def _warmup_face_model():
+    # Trigger detector backend once to avoid first-request cold latency.
+    dummy = np.zeros((96, 96, 3), dtype=np.uint8)
+    rgb = cv2.cvtColor(dummy, cv2.COLOR_BGR2RGB)
+    try:
+        face_recognition.face_locations(
+            rgb,
+            number_of_times_to_upsample=0,
+            model=getattr(face_recognizer, "scan_face_detection_model", "hog"),
+        )
+    except Exception:
+        face_recognition.face_locations(rgb, number_of_times_to_upsample=0, model="hog")
+
+
+def _load_model_once() -> bool:
+    with model_init_lock:
+        if model_init_state.get("loaded"):
+            return True
+
+        face_recognizer.load_model()
+        model_init_state["loaded"] = True
+        model_init_state["error"] = None
+
+        try:
+            _warmup_face_model()
+            model_init_state["warmed"] = True
+        except Exception as exc:
+            model_init_state["warmed"] = False
+            model_init_state["error"] = str(exc)
+
+        return True
+
+
+def _reload_model_after_training():
+    with model_init_lock:
+        face_recognizer.load_model()
+        model_init_state["loaded"] = True
+        model_init_state["error"] = None
+        try:
+            _warmup_face_model()
+            model_init_state["warmed"] = True
+        except Exception as exc:
+            model_init_state["warmed"] = False
+            model_init_state["error"] = str(exc)
 
 
 def _preload_model_on_startup():
     try:
-        face_recognizer.load_model()
+        _load_model_once()
         logger.info("model_preloaded", extra={"event": "model_preloaded", "app_env": APP_ENV})
     except Exception as exc:
         logger.warning(
@@ -1121,7 +1173,7 @@ def _preload_model_on_startup():
         )
 
 
-threading.Thread(target=_preload_model_on_startup, daemon=True).start()
+_preload_model_on_startup()
 
 train_lock = threading.Lock()
 train_state = {
@@ -1161,6 +1213,7 @@ def _run_training_job(job_id: str):
         trainer = ModelTrainer(str(DATASET_PATH), str(MODEL_PATH))
         result = trainer.train(progress_callback=progress_callback)
         _persist_model_artifact_to_db()
+        _reload_model_after_training()
         _update_train_state(
             running=False,
             progress=100,
@@ -1192,6 +1245,10 @@ def _start_training_if_idle() -> Optional[str]:
 @app.get("/health")
 def health_check():
     deps = _dependency_health()
+    try:
+        _load_model_once()
+    except Exception:
+        pass
     model_loaded = bool(len(getattr(face_recognizer, "_known_encodings", [])))
     return jsonify(
         {
@@ -1206,6 +1263,7 @@ def health_check():
             "rate_limit_storage_uri": rate_limit_storage_uri,
             "sentry_enabled": bool(SENTRY_ENABLED),
             "model_loaded": model_loaded,
+            "model_warmed": bool(model_init_state.get("warmed")),
             "dependencies": deps,
         }
     )
@@ -1264,11 +1322,12 @@ def readiness_check():
 def warmup():
     started_at = time.perf_counter()
     try:
-        face_recognizer._ensure_model_loaded()
+        _load_model_once()
         return jsonify(
             {
                 "status": "ok",
                 "model_loaded": True,
+                "model_warmed": bool(model_init_state.get("warmed")),
                 "duration_ms": round((time.perf_counter() - started_at) * 1000.0, 2),
                 "time": datetime.now().isoformat(),
             }
