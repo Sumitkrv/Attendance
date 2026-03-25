@@ -1131,7 +1131,13 @@ def _load_model_once() -> bool:
         if model_init_state.get("loaded"):
             return True
 
-        face_recognizer.load_model()
+        try:
+            face_recognizer.load_model()
+        except Exception:
+            # Deployment-safe fallback: recover model artifact from DB-backed storage
+            # and retry load once.
+            _sync_model_artifact_on_boot()
+            face_recognizer.load_model()
         model_init_state["loaded"] = True
         model_init_state["error"] = None
 
@@ -3240,6 +3246,11 @@ def delete_employee(employee_id):
 @app.errorhandler(RequestEntityTooLarge)
 def handle_large_upload(_error):
     return jsonify({"message": "Upload too large"}), 413
+
+
+@app.errorhandler(429)
+def handle_rate_limit(_error):
+    return jsonify({"status": "wrong_data", "message": "User not match"}), 429
 
 
 @app.errorhandler(Exception)

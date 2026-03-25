@@ -41,7 +41,7 @@ class FaceRecognizer:
         self.scan_face_detection_model = "cnn" if scan_model == "cnn" else "hog"
         self.scan_min_face_area_ratio = max(0.005, env_float("SCAN_MIN_FACE_AREA_RATIO", 0.03))
         self.scan_edge_margin_ratio = max(0.0, env_float("SCAN_EDGE_MARGIN_RATIO", 0.02))
-        self.scan_expected_tolerance = env_float("SCAN_EXPECTED_TOLERANCE", 0.58)
+        self.scan_expected_tolerance = env_float("SCAN_EXPECTED_TOLERANCE", 0.60)
         self.scan_expected_margin = env_float("SCAN_EXPECTED_MARGIN", 0.03)
         self.scan_min_duration_seconds = min(2.0, max(0.0, env_float("SCAN_MIN_DURATION_SECONDS", 2.0)))
         self.liveness_movement_min_pixels_floor = max(1, env_int("LIVENESS_MOVEMENT_MIN_PIXELS", 3))
@@ -361,6 +361,12 @@ class FaceRecognizer:
 
     def scan_frame(self, frame_bgr, expected_name: Optional[str] = None, challenge_action: Optional[str] = None) -> dict:
         """Recognize one frame and mark attendance for user-panel scanning."""
+        try:
+            self._ensure_model_loaded()
+        except Exception:
+            self._set_event("error", "No registered users found", status="wrong_data")
+            return {"status": "wrong_data", "message": "No registered users found"}
+
         if len(self._known_encodings) == 0:
             self._set_event("error", "No registered users found", status="wrong_data")
             return {"status": "wrong_data", "message": "No registered users found"}
@@ -459,7 +465,7 @@ class FaceRecognizer:
             expected_threshold = min(float(self.scan_expected_tolerance), float(scan_tolerance))
             # New users may have fewer images initially; allow a small temporary cushion.
             if expected_sample_count < 3:
-                expected_threshold = min(0.62, expected_threshold + 0.03)
+                expected_threshold = min(0.64, expected_threshold + 0.04)
 
             all_distances = face_recognition.face_distance(self._known_encodings, face_encoding)
             overall_best_distance = float(all_distances.min()) if len(all_distances) else 1.0
