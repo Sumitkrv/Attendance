@@ -2628,29 +2628,8 @@ def scan_attendance():
             and normalized_expected != normalized_detected
             and result.get("status") in {"checked_in", "checked_out", "already_recorded"}
         ):
-            return jsonify({"status": "wrong_data", "message": "User face is not matching"}), 422
+            return jsonify({"status": "wrong_data", "message": "User not match"}), 401
 
-        if (
-            result.get("status") == "wrong_data"
-            and (
-                "model not trained" in str(result.get("message", "")).lower()
-                or "profile is not trained" in str(result.get("message", "")).lower()
-            )
-        ):
-            job_id = _start_training_if_idle()
-            return jsonify(
-                {
-                    "status": "model_not_ready",
-                    "message": (
-                        "Model is not trained yet. Training started in background. "
-                        "Please retry in a few seconds."
-                        if job_id
-                        else "Model training is already running. Please retry in a few seconds."
-                    ),
-                    "training_started": bool(job_id),
-                    "job_id": job_id,
-                }
-            ), 409
         if location_check.get("enabled"):
             result["location"] = {
                 "verified": True,
@@ -2672,7 +2651,15 @@ def scan_attendance():
             }
         if result.get("status") in {"checked_in", "checked_out", "already_recorded"}:
             _set_scan_result_cache(cache_key, result)
-        code = 200 if result.get("status") != "wrong_data" else 422
+        result_message = str(result.get("message") or "")
+        if result.get("status") != "wrong_data":
+            code = 200
+        elif result_message == "User not match":
+            code = 401
+        elif result_message == "No registered users found":
+            code = 400
+        else:
+            code = 422
         return jsonify(result), code
     except Exception as e:
         return jsonify({"status": "wrong_data", "message": str(e)}), 400

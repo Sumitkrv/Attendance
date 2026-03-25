@@ -2815,7 +2815,7 @@ function UserPage() {
       while (Date.now() - startedAt < minScanMs) {
         try {
           ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, canvas.width, canvas.height)
-          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', mobile ? 0.66 : 0.74))
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.6))
           const freshGeo = await updateLocation({ sessionToken: activeToken, enforce: true, silent: true })
           const formData = new FormData()
           formData.append('image', blob, 'scan.jpg')

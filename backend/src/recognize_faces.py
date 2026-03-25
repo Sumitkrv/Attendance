@@ -1,6 +1,7 @@
 import pickle
 import threading
 import os
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,7 @@ class FaceRecognizer:
         self._known_name_keys = []
         self._encodings_by_name = {}
         self._model_mtime_ns = None
+        self._next_model_mtime_check_at = 0.0
         self._running = False
         self._thread = None
         self._frame_count = 0
@@ -80,6 +82,11 @@ class FaceRecognizer:
         if len(self._known_encodings) == 0:
             self.load_model()
             return
+
+        now_ts = time.time()
+        if now_ts < float(self._next_model_mtime_check_at):
+            return
+        self._next_model_mtime_check_at = now_ts + 3.0
 
         try:
             mtime_ns = self.model_path.stat().st_mtime_ns
@@ -357,8 +364,8 @@ class FaceRecognizer:
         try:
             self._ensure_model_loaded()
         except Exception:
-            self._set_event("error", "Wrong data: model not trained", status="wrong_data")
-            return {"status": "wrong_data", "message": "Wrong data: model not trained"}
+            self._set_event("error", "No registered users found", status="wrong_data")
+            return {"status": "wrong_data", "message": "No registered users found"}
 
         if frame_bgr is None or frame_bgr.size == 0:
             self._set_event("error", "Wrong data: invalid image", status="wrong_data")
@@ -441,18 +448,11 @@ class FaceRecognizer:
             expected_key = str(expected_name).strip().lower()
             expected_encodings = self._encodings_by_name.get(expected_key)
             if expected_encodings is None or len(expected_encodings) == 0:
-                # Model may have just been retrained by background job; reload and retry once.
-                try:
-                    self.load_model()
-                except Exception:
-                    pass
-                expected_encodings = self._encodings_by_name.get(expected_key)
-                if expected_encodings is None or len(expected_encodings) == 0:
-                    self._set_event("error", "Wrong data: logged-in user profile not trained", status="wrong_data")
-                    return {
-                        "status": "wrong_data",
-                        "message": "Logged-in user profile is not trained yet. Please retrain model and retry.",
-                    }
+                self._set_event("error", "User not match", status="wrong_data")
+                return {
+                    "status": "wrong_data",
+                    "message": "User not match",
+                }
 
             expected_distances = face_recognition.face_distance(expected_encodings, face_encoding)
             expected_best_distance = float(expected_distances.min())
@@ -474,28 +474,28 @@ class FaceRecognizer:
             expected_margin = max(0.0, float(self.scan_expected_margin))
 
             if overall_best_key and overall_best_key != expected_key and overall_best_distance <= (expected_best_distance + expected_margin):
-                self._set_event("error", "User face is not matching", status="wrong_data")
-                return {"status": "wrong_data", "message": "User face is not matching"}
+                self._set_event("error", "User not match", status="wrong_data")
+                return {"status": "wrong_data", "message": "User not match"}
 
             if expected_best_distance > expected_threshold:
-                self._set_event("error", "User face is not matching", status="wrong_data")
-                return {"status": "wrong_data", "message": "User face is not matching"}
+                self._set_event("error", "User not match", status="wrong_data")
+                return {"status": "wrong_data", "message": "User not match"}
 
             best_match_distance = expected_best_distance
             name = expected_name
         else:
             face_distances = face_recognition.face_distance(self._known_encodings, face_encoding)
             if len(face_distances) == 0:
-                self._set_event("error", "Wrong data: no trained face found", status="wrong_data")
-                return {"status": "wrong_data", "message": "Wrong data: no trained face found"}
+                self._set_event("error", "No registered users found", status="wrong_data")
+                return {"status": "wrong_data", "message": "No registered users found"}
 
             best_match_index = int(face_distances.argmin())
             best_match_distance = float(face_distances[best_match_index])
             name = self._known_names[best_match_index]
 
             if best_match_distance > scan_tolerance:
-                self._set_event("error", "User face is not matching", status="wrong_data")
-                return {"status": "wrong_data", "message": "User face is not matching"}
+                self._set_event("error", "User not match", status="wrong_data")
+                return {"status": "wrong_data", "message": "User not match"}
 
         if self.enable_liveness:
             top, right, bottom, left = best_location
