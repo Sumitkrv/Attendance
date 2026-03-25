@@ -30,6 +30,13 @@ from pymongo.errors import PyMongoError, ServerSelectionTimeoutError, DuplicateK
 from werkzeug.exceptions import HTTPException
 from werkzeug.exceptions import RequestEntityTooLarge
 
+if __package__ is None or __package__ == "":
+    import sys
+
+    _backend_root = Path(__file__).resolve().parents[2]
+    if str(_backend_root) not in sys.path:
+        sys.path.insert(0, str(_backend_root))
+
 from src.attendance.attendance_manager import AttendanceManager
 from src.recognize_faces import FaceRecognizer
 from src.security import (
@@ -221,7 +228,7 @@ class _OrjsonProvider(DefaultJSONProvider):
             return super().dumps(obj, **kwargs)
         return orjson.dumps(obj).decode("utf-8")
 
-    def loads(self, s: str | bytes, **kwargs):
+    def loads(self, s, **kwargs):
         if orjson is None:
             return super().loads(s, **kwargs)
         if isinstance(s, str):
