@@ -2800,7 +2800,7 @@ function UserPage() {
 
     try {
       setChallengeInstruction('Keep your face centered and hold steady for a moment.')
-      setStatus('Keep your face centered and hold steady for a moment.')
+      setStatus('Scanning...')
       const canvas = canvasRef.current
       const video = videoRef.current
       const srcW = video.videoWidth || 640
@@ -2814,16 +2814,15 @@ function UserPage() {
       canvas.width = 320
       canvas.height = 240
       const ctx = canvas.getContext('2d')
-      const minScanMs = 1200
-      const attemptGapMs = 300
-      const startedAt = Date.now()
       let data = null
       let lastErr = null
+      const maxRetries = 3
 
-      while (Date.now() - startedAt < minScanMs) {
+      for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
         try {
           ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, canvas.width, canvas.height)
           const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.5))
+          if (!blob) throw new Error('Unable to capture scan image')
           const freshGeo = await updateLocation({ sessionToken: activeToken, enforce: true, silent: true })
           const formData = new FormData()
           formData.append('image', blob, 'scan.jpg')
@@ -2839,14 +2838,32 @@ function UserPage() {
             method: 'POST',
             body: formData,
           }, activeToken)
+
+          if (data?.status === 'wrong_data') {
+            const e = new Error(String(data?.message || 'Scan failed'))
+            e.status = 422
+            throw e
+          }
+
           if (data) break
         } catch (err) {
           lastErr = err
-        }
-
-        const remaining = minScanMs - (Date.now() - startedAt)
-        if (remaining > 0) {
-          await new Promise((resolve) => setTimeout(resolve, Math.min(attemptGapMs, remaining)))
+          const statusCode = Number(err?.status || err?.code || 0)
+          const text = String(err?.message || '').toLowerCase()
+          const retryableScanError = (
+            statusCode === 422
+            || !!err?.retryable
+            || text.includes('scan')
+            || text.includes('face')
+            || text.includes('align')
+            || text.includes('liveness')
+            || text.includes('unable to verify')
+          )
+          if (attempt < maxRetries && retryableScanError) {
+            await new Promise((resolve) => setTimeout(resolve, 500))
+            continue
+          }
+          throw err
         }
       }
 
