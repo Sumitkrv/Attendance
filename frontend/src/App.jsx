@@ -9,9 +9,9 @@ const UI_THEME_KEY = 'fa_ui_theme'
 const SESSION_REFRESH_CHECK_MS = 60 * 1000
 const SESSION_REFRESH_BEFORE_MS = 15 * 60 * 1000
 const SESSION_EXPIRING_SOON_MS = 5 * 60 * 1000
-const GEO_TIMEOUT_MS = 10000
+const GEO_TIMEOUT_MS = 1800
 const GEO_MAX_AGE_MS = 0
-const GEO_RETRY_COUNT = 2
+const GEO_RETRY_COUNT = 0
 
 function readDarkModePreference() {
   try {
@@ -2718,7 +2718,7 @@ function UserPage() {
             reject,
             {
               enableHighAccuracy: true,
-              timeout: 10000,
+              timeout: GEO_TIMEOUT_MS,
               maximumAge: 0,
             },
           )
@@ -2814,16 +2814,29 @@ function UserPage() {
       canvas.width = 320
       canvas.height = 240
       const ctx = canvas.getContext('2d')
+      const tokenClaims = decodeToken(activeToken || '') || {}
+      const sessionJti = String(tokenClaims.jti || '')
+      const geoAgeMs = Date.now() - Number(geo?.capturedAtMs || 0)
+      const useCachedGeo = Boolean(
+        geo?.lat
+        && geo?.lng
+        && geo?.capturedAtMs
+        && String(geo?.sessionJti || '') === sessionJti
+        && geoAgeMs >= 0
+        && geoAgeMs <= 20000,
+      )
+      const freshGeo = useCachedGeo
+        ? geo
+        : await updateLocation({ sessionToken: activeToken, enforce: true, silent: true })
       let data = null
       let lastErr = null
-      const maxRetries = 3
+      const maxRetries = 1
 
       for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
         try {
           ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, canvas.width, canvas.height)
           const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.5))
           if (!blob) throw new Error('Unable to capture scan image')
-          const freshGeo = await updateLocation({ sessionToken: activeToken, enforce: true, silent: true })
           const formData = new FormData()
           formData.append('image', blob, 'scan.jpg')
           if (freshGeo?.lat && freshGeo?.lng) {
