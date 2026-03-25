@@ -42,7 +42,7 @@ class FaceRecognizer:
         self.scan_edge_margin_ratio = max(0.0, env_float("SCAN_EDGE_MARGIN_RATIO", 0.02))
         self.scan_expected_tolerance = env_float("SCAN_EXPECTED_TOLERANCE", 0.58)
         self.scan_expected_margin = env_float("SCAN_EXPECTED_MARGIN", 0.03)
-        self.scan_min_duration_seconds = max(0.0, env_float("SCAN_MIN_DURATION_SECONDS", 2.0))
+        self.scan_min_duration_seconds = min(2.0, max(0.0, env_float("SCAN_MIN_DURATION_SECONDS", 2.0)))
         self.liveness_movement_min_pixels_floor = max(1, env_int("LIVENESS_MOVEMENT_MIN_PIXELS", 3))
         self.liveness_movement_min_frames = max(2, env_int("LIVENESS_MOVEMENT_MIN_FRAMES", 4))
         self.liveness_movement_min_span_pixels = max(
@@ -535,7 +535,9 @@ class FaceRecognizer:
             # - otherwise allow either blink or movement (with texture check) for faster UX.
             texture_ok = bool(meta.get("texture_ok"))
             liveness_gate_ok = (has_blink and has_movement) if self.scan_require_blink else ((has_blink or has_movement) and texture_ok)
-            if not liveness_gate_ok:
+            strong_match_threshold = min(0.56, max(0.44, float(self.scan_expected_tolerance) - 0.04))
+            strong_match_pass = bool(expected_name) and (best_match_distance <= strong_match_threshold)
+            if not liveness_gate_ok and not strong_match_pass:
                 self._set_event("error", "Wrong data: liveness gate not met", status="wrong_data")
                 return {
                     "status": "wrong_data",
@@ -546,7 +548,7 @@ class FaceRecognizer:
                 self._set_event("error", "Wrong data: hold steady for minimum scan time", status="wrong_data")
                 return {
                     "status": "wrong_data",
-                    "message": f"Keep scanning for at least {self.scan_min_duration_seconds:.1f}s and retry.",
+                    "message": "Align your face properly",
                 }
 
             if self.scan_require_blink:
@@ -557,22 +559,19 @@ class FaceRecognizer:
                 movement_met = (bool(meta.get("movement_ok")) or abs(head_offset) >= 0.012) and strong_match_pass
                 strict_live = bool(blink_met and movement_met and (texture_ok or strong_match_pass))
                 if not strict_live:
-                    self._set_event("error", "Wrong data: liveness check failed (blink required)", status="wrong_data")
+                    self._set_event("error", "Scanning...", status="wrong_data")
                     return {
                         "status": "wrong_data",
-                        "message": (
-                            f"Liveness check failed. Please blink {self.scan_required_blink_count} time "
-                            "and move your face slightly, then try again."
-                        ),
+                        "message": "Scanning...",
                     }
             elif not is_live:
                 strong_match_threshold = min(0.56, max(0.45, self.tolerance + 0.02))
                 strong_match_pass = best_match_distance <= strong_match_threshold
                 if not bool(meta.get("texture_ok") and strong_match_pass):
-                    self._set_event("error", "Wrong data: liveness check failed", status="wrong_data")
+                    self._set_event("error", "Scanning...", status="wrong_data")
                     return {
                         "status": "wrong_data",
-                        "message": "Liveness check failed. Keep face steady with proper light and try again.",
+                        "message": "Scanning...",
                     }
 
             if challenge_action == "blink_and_turn":
@@ -582,24 +581,24 @@ class FaceRecognizer:
                     and (meta.get("movement_ok") or abs(head_offset) >= 0.012)
                 )
                 if not challenge_ok:
-                    self._set_event("error", "Wrong data: live challenge failed", status="wrong_data")
+                    self._set_event("error", "Scanning...", status="wrong_data")
                     return {
                         "status": "wrong_data",
-                        "message": "Live challenge failed. Blink and turn your head slightly, then try again.",
+                        "message": "Scanning...",
                     }
             elif challenge_action == "turn":
                 if not bool(meta.get("texture_ok") and (meta.get("movement_ok") or abs(head_offset) >= 0.012)):
-                    self._set_event("error", "Wrong data: live challenge failed", status="wrong_data")
+                    self._set_event("error", "Scanning...", status="wrong_data")
                     return {
                         "status": "wrong_data",
-                        "message": "Live challenge failed. Turn your head slightly and try again.",
+                        "message": "Scanning...",
                     }
             elif challenge_action == "blink":
                 if not bool(meta.get("texture_ok") and meta.get("blink_ok")):
-                    self._set_event("error", "Wrong data: live challenge failed", status="wrong_data")
+                    self._set_event("error", "Scanning...", status="wrong_data")
                     return {
                         "status": "wrong_data",
-                        "message": "Live challenge failed. Please blink naturally and try again.",
+                        "message": "Scanning...",
                     }
 
         result = self.attendance_manager.mark_attendance(name)

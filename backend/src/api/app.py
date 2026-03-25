@@ -608,25 +608,22 @@ def _validate_scan_location(claims: Optional[dict] = None):
             "message": "Location is required for attendance",
         }
 
+    now_ms = int(time.time() * 1000)
     location_captured_at_ms = _parse_location_captured_at_ms(request.form.get("location_captured_at_ms"))
     if location_captured_at_ms is None:
-        return {
-            "enabled": True,
-            "ok": False,
-            "code": 400,
-            "status": "location_timestamp_required",
-            "message": "Fresh location timestamp is required for attendance",
-        }
+        location_captured_at_ms = now_ms
 
-    now_ms = int(time.time() * 1000)
     age_ms = now_ms - location_captured_at_ms
-    if age_ms < -5000 or age_ms > (location_max_age_seconds * 1000):
+    max_age_ms = max(int(location_max_age_seconds * 1000), 2 * 60 * 1000)
+    app.logger.info("Client timestamp: %s", location_captured_at_ms)
+    app.logger.info("Server time: %s", now_ms)
+    if age_ms < -5000 or age_ms > max_age_ms:
         return {
             "enabled": True,
             "ok": False,
             "code": 400,
             "status": "stale_location",
-            "message": f"Location is too old. Refresh location and retry within {location_max_age_seconds} seconds.",
+            "message": f"Location is too old. Refresh location and retry within {int(max_age_ms / 1000)} seconds.",
             "location_age_ms": age_ms,
         }
 

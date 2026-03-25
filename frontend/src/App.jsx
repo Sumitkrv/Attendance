@@ -2699,8 +2699,8 @@ function UserPage() {
             reject,
             {
               enableHighAccuracy: true,
-              timeout: GEO_TIMEOUT_MS,
-              maximumAge: GEO_MAX_AGE_MS,
+              timeout: 10000,
+              maximumAge: 0,
             },
           )
         })
@@ -2777,7 +2777,6 @@ function UserPage() {
     try {
       setChallengeInstruction('Keep your face centered and hold steady for a moment.')
       setStatus('Keep your face centered and hold steady for a moment.')
-      const freshGeo = await updateLocation({ sessionToken: token, enforce: true, silent: true })
       const canvas = canvasRef.current
       const video = videoRef.current
       const srcW = video.videoWidth || 640
@@ -2803,6 +2802,7 @@ function UserPage() {
         try {
           ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, canvas.width, canvas.height)
           const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', mobile ? 0.66 : 0.74))
+          const freshGeo = await updateLocation({ sessionToken: token, enforce: true, silent: true })
           const formData = new FormData()
           formData.append('image', blob, 'scan.jpg')
           if (freshGeo?.lat && freshGeo?.lng) {
