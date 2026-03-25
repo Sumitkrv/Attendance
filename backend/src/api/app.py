@@ -645,7 +645,7 @@ def _validate_scan_location(claims: Optional[dict] = None):
 
     location_session_jti = (request.form.get("location_session_jti") or "").strip()
     token_jti = str(claims.get("jti") or "").strip()
-    if token_jti and location_session_jti != token_jti:
+    if token_jti and location_session_jti and location_session_jti != token_jti:
         return {
             "enabled": True,
             "ok": False,

@@ -2582,6 +2582,16 @@ function UserPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
+  useEffect(() => {
+    const onStorage = (event) => {
+      if (event.key !== USER_KEY) return
+      const latest = readValidToken(USER_KEY, 'user')
+      setToken((old) => (old === latest ? old : latest))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
   async function startCamera() {
     try {
       const stream = await requestUserCameraStream('attendance')
@@ -2766,7 +2776,11 @@ function UserPage() {
   }
 
   async function checkInNow(silent = false) {
-    if (!token) return
+    const activeToken = readValidToken(USER_KEY, 'user') || token
+    if (!activeToken) {
+      logout()
+      return
+    }
     if (!videoRef.current || !canvasRef.current || !cameraOn) {
       setError('Start camera first')
       return
@@ -2792,7 +2806,7 @@ function UserPage() {
       canvas.width = Math.max(1, Math.round(cropW * scale))
       canvas.height = Math.max(1, Math.round(cropH * scale))
       const ctx = canvas.getContext('2d')
-      const minScanMs = 1200
+      const minScanMs = 2000
       const attemptGapMs = 300
       const startedAt = Date.now()
       let data = null
@@ -2802,7 +2816,7 @@ function UserPage() {
         try {
           ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, canvas.width, canvas.height)
           const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', mobile ? 0.66 : 0.74))
-          const freshGeo = await updateLocation({ sessionToken: token, enforce: true, silent: true })
+          const freshGeo = await updateLocation({ sessionToken: activeToken, enforce: true, silent: true })
           const formData = new FormData()
           formData.append('image', blob, 'scan.jpg')
           if (freshGeo?.lat && freshGeo?.lng) {
@@ -2816,7 +2830,7 @@ function UserPage() {
           data = await apiFetch('/scan_attendance', {
             method: 'POST',
             body: formData,
-          }, token)
+          }, activeToken)
           if (data) break
         } catch (err) {
           lastErr = err
@@ -2844,7 +2858,7 @@ function UserPage() {
         checkIn: data?.check_in || old.checkIn,
         checkOut: data?.check_out || old.checkOut,
       }))
-      writeAttendanceCache(token, {
+      writeAttendanceCache(activeToken, {
         status: String(data?.status || attendanceState || '').toLowerCase(),
         checkIn: nextTimes.checkIn,
         checkOut: nextTimes.checkOut,
@@ -2859,11 +2873,20 @@ function UserPage() {
       if (['checked_in', 'checked_out', 'already_recorded'].includes(String(data.status || ''))) {
         const title = data.status === 'already_recorded' ? 'Already Marked' : 'Attendance Marked'
         showPopup('success', title, text)
-        await refreshTodayAttendance(token)
+        await refreshTodayAttendance(activeToken)
         stopCamera()
       }
     } catch (err) {
       clearRetryAction()
+      const text = String(err?.message || '')
+      if (/location\s+token\s+mismatch|invalid\s+token|please\s+log\s*in\s+again|unauthorized/i.test(text)) {
+        localStorage.removeItem(USER_KEY)
+        setToken('')
+        setEmployee(null)
+        setGeo({ lat: '', lng: '', accuracy: '', capturedAtMs: '', sessionJti: '' })
+        setError('Session expired. Please login again.')
+        return
+      }
       setError(err.message)
       if (!silent) {
         showPopup('error', 'Scan Failed', err.message)

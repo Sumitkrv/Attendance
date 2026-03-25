@@ -10,14 +10,25 @@ function makeApiError(message, details = {}) {
   return err
 }
 
+function readLatestStoredToken() {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return ''
+    return localStorage.getItem('fa_user_token') || localStorage.getItem('fa_admin_token') || ''
+  } catch {
+    return ''
+  }
+}
+
 export async function apiFetch(path, options = {}, token) {
   const timeoutMs = Number(options.timeoutMs || 15000)
   const retries = Number(options.retries ?? ((options.method || 'GET').toUpperCase() === 'GET' ? 1 : 0))
   const retryDelayMs = Number(options.retryDelayMs || 450)
+  const effectiveToken = token || readLatestStoredToken()
   const headers = {
+    'Cache-Control': 'no-cache',
     ...(options.headers || {}),
   }
-  if (token && !headers.Authorization) headers.Authorization = `Bearer ${token}`
+  if (effectiveToken && !headers.Authorization) headers.Authorization = `Bearer ${effectiveToken}`
 
   const requestOptions = {
     ...options,
