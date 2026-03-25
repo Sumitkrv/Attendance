@@ -2376,6 +2376,7 @@ function UserPage() {
     checkOut: cachedAttendance.checkOut || '',
   })
   const [cameraOn, setCameraOn] = useState(false)
+  const [isScanning, setIsScanning] = useState(false)
   const [status, setStatus] = useState('Ready')
   const [manualModalOpen, setManualModalOpen] = useState(false)
   const [manualSubmitting, setManualSubmitting] = useState(false)
@@ -2399,6 +2400,7 @@ function UserPage() {
   const manualCanvasRef = useRef(null)
   const manualStreamRef = useRef(null)
   const scanInFlightRef = useRef(false)
+  const cameraPreloadAttemptedRef = useRef(false)
   const userRefreshInFlightRef = useRef(false)
 
   function clearRetryAction() {
@@ -2581,6 +2583,13 @@ function UserPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
+
+  useEffect(() => {
+    if (!token || cameraOn || cameraPreloadAttemptedRef.current || employee?.must_change_password) return
+    cameraPreloadAttemptedRef.current = true
+    startCamera()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, cameraOn, employee?.must_change_password])
 
   useEffect(() => {
     const onStorage = (event) => {
@@ -2787,6 +2796,7 @@ function UserPage() {
     }
     if (scanInFlightRef.current) return
     scanInFlightRef.current = true
+    setIsScanning(true)
 
     try {
       setChallengeInstruction('Keep your face centered and hold steady for a moment.')
@@ -2801,12 +2811,10 @@ function UserPage() {
       const cropH = Math.max(1, Math.round(srcH * cropFactor))
       const cropX = Math.max(0, Math.round((srcW - cropW) / 2))
       const cropY = Math.max(0, Math.round((srcH - cropH) / 2))
-      const maxW = mobile ? 320 : 420
-      const scale = cropW > maxW ? maxW / cropW : 1
-      canvas.width = Math.max(1, Math.round(cropW * scale))
-      canvas.height = Math.max(1, Math.round(cropH * scale))
+      canvas.width = 320
+      canvas.height = 240
       const ctx = canvas.getContext('2d')
-      const minScanMs = 2000
+      const minScanMs = 1200
       const attemptGapMs = 300
       const startedAt = Date.now()
       let data = null
@@ -2815,7 +2823,7 @@ function UserPage() {
       while (Date.now() - startedAt < minScanMs) {
         try {
           ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, canvas.width, canvas.height)
-          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.6))
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.5))
           const freshGeo = await updateLocation({ sessionToken: activeToken, enforce: true, silent: true })
           const formData = new FormData()
           formData.append('image', blob, 'scan.jpg')
@@ -2893,6 +2901,7 @@ function UserPage() {
       }
     } finally {
       scanInFlightRef.current = false
+      setIsScanning(false)
     }
   }
 
@@ -3219,9 +3228,9 @@ function UserPage() {
                 <button
                   className={`attendance-primary-btn ${(!cameraOn || !locationReady) ? 'ui-disabled' : ''}`}
                   onClick={checkInNow}
-                  disabled={!cameraOn || employee?.must_change_password}
+                  disabled={!cameraOn || employee?.must_change_password || isScanning}
                 >
-                  {primaryButtonLabel}
+                  {isScanning ? 'Scanning...' : primaryButtonLabel}
                 </button>
               </div>
             </div>
