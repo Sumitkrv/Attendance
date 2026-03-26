@@ -241,18 +241,37 @@ class _OrjsonProvider(DefaultJSONProvider):
 
 
 app = Flask(__name__)
+
+DEFAULT_CORS_ORIGINS = [
+    "https://attendance-frontend-virid-one.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+allowed_origins_env = str(os.getenv("ALLOWED_ORIGINS", "")).strip()
+cors_allow_all = str(os.getenv("CORS_ALLOW_ALL", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+if allowed_origins_env:
+    env_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+else:
+    env_origins = []
+
+cors_origins = list(dict.fromkeys(DEFAULT_CORS_ORIGINS + env_origins))
+
+if cors_allow_all:
+    CORS(app)
+else:
+    CORS(
+        app,
+        resources={r"/*": {"origins": cors_origins}},
+        supports_credentials=True,
+        allow_headers=["Content-Type", "Authorization"],
+        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    )
+
 if orjson is not None:
     app.json_provider_class = _OrjsonProvider
     app.json = app.json_provider_class(app)
-
-allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "*").strip()
-if allowed_origins_env == "*":
-    cors_origins = "*"
-else:
-    cors_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
-    if not cors_origins:
-        cors_origins = "*"
-CORS(app, resources={r"/*": {"origins": cors_origins}})
 
 if Compress is not None:
     app.config["COMPRESS_ALGORITHM"] = ["gzip"]
@@ -364,6 +383,23 @@ def _set_security_headers(response):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(self), geolocation=(self)")
     response.headers.setdefault("Cache-Control", "no-store")
+
+    request_origin = request.headers.get("Origin", "").strip()
+    if cors_allow_all:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    elif request_origin and request_origin in cors_origins:
+        response.headers["Access-Control-Allow-Origin"] = request_origin
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "https://attendance-frontend-virid-one.vercel.app"
+
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+    if not cors_allow_all:
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+
+    vary_header = response.headers.get("Vary", "")
+    if "Origin" not in vary_header:
+        response.headers["Vary"] = f"{vary_header}, Origin".strip(", ")
 
     start_ts = getattr(g, "request_start_ts", None)
     if start_ts is not None:
@@ -3295,4 +3331,5 @@ def handle_unhandled_exception(error):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5001"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    debug_mode = str(os.getenv("FLASK_DEBUG", "false")).strip().lower() in {"1", "true", "yes", "on"}
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)
