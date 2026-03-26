@@ -1,15 +1,17 @@
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Union
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
 def now_local() -> datetime:
-    """Return current local datetime."""
-    return datetime.now()
+    """Return current IST datetime."""
+    return datetime.now(_IST)
 
 
 def today_str() -> str:

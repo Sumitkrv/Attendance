@@ -3,9 +3,11 @@ import threading
 import os
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 import cv2
 import face_recognition
@@ -32,18 +34,18 @@ class FaceRecognizer:
 
         enable_liveness_raw = str(os.getenv("ENABLE_LIVENESS", "true")).lower()
         self.enable_liveness = enable_liveness_raw in {"1", "true", "yes", "on"}
-        scan_require_blink_raw = str(os.getenv("SCAN_REQUIRE_BLINK", "false")).lower()
+        scan_require_blink_raw = str(os.getenv("SCAN_REQUIRE_BLINK", "true")).lower()
         self.scan_require_blink = scan_require_blink_raw in {"1", "true", "yes", "on"}
         self.scan_required_blink_count = max(1, env_int("SCAN_REQUIRED_BLINK_COUNT", 1))
-        self.scan_resize_width = max(320, env_int("SCAN_RESIZE_WIDTH", 480))
+        self.scan_resize_width = max(320, env_int("SCAN_RESIZE_WIDTH", 640))
         self.scan_face_upsample_times = max(0, env_int("SCAN_FACE_UPSAMPLE_TIMES", 0))
         scan_model = str(os.getenv("SCAN_FACE_DETECTION_MODEL", "hog")).strip().lower()
         self.scan_face_detection_model = "cnn" if scan_model == "cnn" else "hog"
         self.scan_min_face_area_ratio = max(0.005, env_float("SCAN_MIN_FACE_AREA_RATIO", 0.03))
         self.scan_edge_margin_ratio = max(0.0, env_float("SCAN_EDGE_MARGIN_RATIO", 0.02))
-        self.scan_expected_tolerance = env_float("SCAN_EXPECTED_TOLERANCE", 0.60)
-        self.scan_expected_margin = env_float("SCAN_EXPECTED_MARGIN", 0.03)
-        self.scan_min_duration_seconds = min(2.0, max(0.0, env_float("SCAN_MIN_DURATION_SECONDS", 2.0)))
+        self.scan_expected_tolerance = env_float("SCAN_EXPECTED_TOLERANCE", 0.63)
+        self.scan_expected_margin = env_float("SCAN_EXPECTED_MARGIN", 0.06)
+        self.scan_min_duration_seconds = max(0.0, min(2.0, env_float("SCAN_MIN_DURATION_SECONDS", 0.35)))
         self.liveness_movement_min_pixels_floor = max(1, env_int("LIVENESS_MOVEMENT_MIN_PIXELS", 3))
         self.liveness_movement_min_frames = max(2, env_int("LIVENESS_MOVEMENT_MIN_FRAMES", 4))
         self.liveness_movement_min_span_pixels = max(
@@ -75,7 +77,7 @@ class FaceRecognizer:
             "type": "idle",
             "status": "idle",
             "message": "Camera idle",
-            "time": datetime.now().isoformat(),
+            "time": datetime.now(_IST).isoformat(),
         }
 
     def _ensure_model_loaded(self):
@@ -115,7 +117,7 @@ class FaceRecognizer:
             "type": event_type,
             "status": status or event_type,
             "message": message,
-            "time": datetime.now().isoformat(),
+            "time": datetime.now(_IST).isoformat(),
             "employee_name": name,
         }
         self._last_event = event
@@ -157,7 +159,8 @@ class FaceRecognizer:
         if "enable_liveness" in payload:
             self.enable_liveness = bool(payload["enable_liveness"])
         if "scan_require_blink" in payload:
-            self.scan_require_blink = bool(payload["scan_require_blink"])
+            # Blink is mandatory for attendance scan.
+            self.scan_require_blink = True
         if "scan_required_blink_count" in payload:
             self.scan_required_blink_count = max(1, int(payload["scan_required_blink_count"]))
         if "scan_resize_width" in payload:
@@ -176,7 +179,7 @@ class FaceRecognizer:
         if "scan_expected_margin" in payload:
             self.scan_expected_margin = float(payload["scan_expected_margin"])
         if "scan_min_duration_seconds" in payload:
-            self.scan_min_duration_seconds = max(0.0, float(payload["scan_min_duration_seconds"]))
+            self.scan_min_duration_seconds = max(0.0, min(2.0, float(payload["scan_min_duration_seconds"])))
         if "blink_consec_frames" in payload:
             self.guard.blink_consec_frames = max(1, int(payload["blink_consec_frames"]))
         if "movement_min_pixels" in payload:
@@ -361,6 +364,7 @@ class FaceRecognizer:
 
     def scan_frame(self, frame_bgr, expected_name: Optional[str] = None, challenge_action: Optional[str] = None) -> dict:
         """Recognize one frame and mark attendance for user-panel scanning."""
+        scan_start = time.time()
         try:
             self._ensure_model_loaded()
         except Exception:
@@ -445,7 +449,7 @@ class FaceRecognizer:
 
         face_encoding = encodings[0]
         best_match_distance = 1.0
-        scan_tolerance = min(0.68, self.tolerance + 0.1)
+        scan_tolerance = min(0.70, self.tolerance + 0.12)
         name = "Unknown"
 
         if expected_name:
@@ -459,13 +463,18 @@ class FaceRecognizer:
                 }
 
             expected_distances = face_recognition.face_distance(expected_encodings, face_encoding)
-            expected_best_distance = float(expected_distances.min())
+            # Use average of top-3 closest distances for more robust matching
+            sorted_distances = np.sort(expected_distances)
+            top_n = min(3, len(sorted_distances))
+            expected_best_distance = float(sorted_distances[:top_n].mean())
             expected_sample_count = int(len(expected_encodings))
 
             expected_threshold = min(float(self.scan_expected_tolerance), float(scan_tolerance))
-            # New users may have fewer images initially; allow a small temporary cushion.
+            # Users with fewer training images need a wider tolerance cushion.
             if expected_sample_count < 3:
-                expected_threshold = min(0.64, expected_threshold + 0.04)
+                expected_threshold = min(0.66, expected_threshold + 0.06)
+            elif expected_sample_count < 5:
+                expected_threshold = min(0.65, expected_threshold + 0.03)
 
             all_distances = face_recognition.face_distance(self._known_encodings, face_encoding)
             overall_best_distance = float(all_distances.min()) if len(all_distances) else 1.0
@@ -477,7 +486,13 @@ class FaceRecognizer:
             )
             expected_margin = max(0.0, float(self.scan_expected_margin))
 
-            if overall_best_key and overall_best_key != expected_key and overall_best_distance <= (expected_best_distance + expected_margin):
+            # Only reject if someone else is a clearly better match (not just marginally closer).
+            if (
+                overall_best_key
+                and overall_best_key != expected_key
+                and overall_best_distance < expected_best_distance
+                and (expected_best_distance - overall_best_distance) > expected_margin
+            ):
                 self._set_event("error", "User not match", status="wrong_data")
                 return {"status": "wrong_data", "message": "User not match"}
 
@@ -560,8 +575,7 @@ class FaceRecognizer:
                 strong_match_pass = best_match_distance <= strong_match_threshold
                 blink_met = int(meta.get("blink_count") or 0) >= int(self.scan_required_blink_count) or closed_eye_frame
                 texture_ok = bool(meta.get("texture_ok"))
-                movement_met = (bool(meta.get("movement_ok")) or abs(head_offset) >= 0.012) and strong_match_pass
-                strict_live = bool(blink_met and movement_met and (texture_ok or strong_match_pass))
+                strict_live = bool(blink_met and (texture_ok or strong_match_pass))
                 if not strict_live:
                     self._set_event("error", "Scanning...", status="wrong_data")
                     return {
@@ -640,6 +654,7 @@ class FaceRecognizer:
                 self.guard.reset_person(expected_name or name)
             except Exception:
                 pass
+        scan_ms = round((time.time() - scan_start) * 1000, 1)
         return {
             "status": status,
             "employee_name": name,
@@ -647,5 +662,9 @@ class FaceRecognizer:
             "date": result.get("date"),
             "check_in": result.get("check_in"),
             "check_out": result.get("check_out"),
+            "check_in_at": result.get("check_in_at"),
+            "check_out_at": result.get("check_out_at"),
             "manual_entry": bool(result.get("manual_entry")),
+            "match_distance": round(best_match_distance, 4),
+            "scan_time_ms": scan_ms,
         }

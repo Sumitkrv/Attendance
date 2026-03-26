@@ -1,4 +1,4 @@
-export const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5001'
+import { API_BASE, API_CONNECTION_ERROR_MESSAGE } from './config/apiConfig'
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -8,6 +8,10 @@ function makeApiError(message, details = {}) {
   const err = new Error(message)
   Object.assign(err, details)
   return err
+}
+
+function buildUnreachableServerMessage() {
+  return API_CONNECTION_ERROR_MESSAGE
 }
 
 function readLatestStoredToken() {
@@ -20,6 +24,14 @@ function readLatestStoredToken() {
 }
 
 export async function apiFetch(path, options = {}, token) {
+  if (!API_BASE) {
+    throw makeApiError(API_CONNECTION_ERROR_MESSAGE, {
+      retryable: false,
+      status: 0,
+      code: 'api_base_missing',
+    })
+  }
+
   const timeoutMs = Number(options.timeoutMs || 15000)
   const retries = Number(options.retries ?? ((options.method || 'GET').toUpperCase() === 'GET' ? 1 : 0))
   const retryDelayMs = Number(options.retryDelayMs || 450)
@@ -31,6 +43,7 @@ export async function apiFetch(path, options = {}, token) {
   if (effectiveToken && !headers.Authorization) headers.Authorization = `Bearer ${effectiveToken}`
 
   const requestOptions = {
+    mode: 'cors',
     ...options,
     headers,
   }
@@ -45,7 +58,8 @@ export async function apiFetch(path, options = {}, token) {
 
     let response
     try {
-      response = await fetch(`${API_BASE}${path}`, {
+      const endpoint = String(path || '').startsWith('/') ? path : `/${path}`
+      response = await fetch(`${API_BASE}${endpoint}`, {
         ...requestOptions,
         signal: controller.signal,
       })
@@ -57,7 +71,7 @@ export async function apiFetch(path, options = {}, token) {
       lastErr = makeApiError(
         aborted
           ? 'Request timed out. Please retry.'
-          : 'Unable to reach server. Please ensure backend is running on http://127.0.0.1:5001 and retry.',
+          : buildUnreachableServerMessage(),
         {
           retryable,
           status: 0,

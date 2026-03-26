@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Attendance Mobile",
+    "slug": "attendance-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera access is required to verify your face for attendance.",
+        "NSLocationWhenInUseUsageDescription": "Location access is required to validate attendance geofence."
+      }
+    },
+    "android": {
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "extra": {
+      "apiBaseUrl": "http://192.168.1.28:8000/api/v1"
+    }
+  }
+}

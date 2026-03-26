@@ -12,6 +12,7 @@ const SESSION_EXPIRING_SOON_MS = 5 * 60 * 1000
 const GEO_TIMEOUT_MS = 1800
 const GEO_MAX_AGE_MS = 0
 const GEO_RETRY_COUNT = 0
+const APP_TIME_ZONE = 'Asia/Kolkata'
 
 function readDarkModePreference() {
   try {
@@ -35,8 +36,8 @@ function readAttendanceCache(token) {
     const row = all?.[loginId] || {}
     return {
       status: String(row.status || '').toLowerCase(),
-      checkIn: row.checkIn || '',
-      checkOut: row.checkOut || '',
+      checkIn: '',
+      checkOut: '',
     }
   } catch {
     return { status: '', checkIn: '', checkOut: '' }
@@ -62,10 +63,66 @@ function writeAttendanceCache(token, payload = {}) {
 }
 
 function formatDateInput(date = new Date()) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: APP_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date)
+    const y = parts.find((p) => p.type === 'year')?.value
+    const m = parts.find((p) => p.type === 'month')?.value
+    const d = parts.find((p) => p.type === 'day')?.value
+    if (y && m && d) return `${y}-${m}-${d}`
+  } catch {
+    // fallback below
+  }
   const y = date.getFullYear()
   const m = `${date.getMonth() + 1}`.padStart(2, '0')
   const d = `${date.getDate()}`.padStart(2, '0')
   return `${y}-${m}-${d}`
+}
+
+function formatTimeInIST(value) {
+  if (!value) return '-'
+  try {
+    return new Intl.DateTimeFormat('en-IN', {
+      timeZone: APP_TIME_ZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(new Date(value))
+  } catch {
+    return '-'
+  }
+}
+
+function formatAttendanceTimeFromUtc(utcIso, fallback = '', dateHint = '') {
+  const iso = String(utcIso || '').trim()
+  const legacy = String(fallback || '').trim()
+  const date = String(dateHint || '').trim()
+  const sourceIso = iso || (/^\d{4}-\d{2}-\d{2}$/.test(date) && /^\d{2}:\d{2}:\d{2}$/.test(legacy) ? `${date}T${legacy}Z` : '')
+  if (!sourceIso) return legacy
+  try {
+    return new Intl.DateTimeFormat('en-IN', {
+      timeZone: APP_TIME_ZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(new Date(sourceIso))
+  } catch {
+    return legacy
+  }
+}
+
+function normalizeAttendanceRow(row = {}) {
+  return {
+    ...row,
+    check_in: formatAttendanceTimeFromUtc(row?.check_in_at, row?.check_in, row?.date),
+    check_out: formatAttendanceTimeFromUtc(row?.check_out_at, row?.check_out, row?.date),
+  }
 }
 
 function decodeToken(token) {
@@ -111,7 +168,7 @@ function isRetryableError(err) {
   return !!err?.retryable
     || text.includes('temporarily unavailable')
     || text.includes('try again')
-    || text.includes('unable to reach server')
+    || text.includes('unable to connect to server')
     || text.includes('timed out')
     || text.includes('network')
 }
@@ -623,6 +680,7 @@ function AdminPage() {
     if (!settingsLastUpdated) return '-'
     try {
       return new Intl.DateTimeFormat('en-IN', {
+        timeZone: APP_TIME_ZONE,
         day: '2-digit',
         month: 'short',
         hour: 'numeric',
@@ -672,7 +730,7 @@ function AdminPage() {
         apiFetch('/train_model/status', {}, token),
       ])
       setEmployees(e)
-      setAttendance(a)
+      setAttendance(Array.isArray(a) ? a.map((row) => normalizeAttendanceRow(row)) : [])
       setManualRequests(req)
       setRecognition(rec)
       setRecognitionInitial(rec)
@@ -700,7 +758,7 @@ function AdminPage() {
     if (!nextToken) return
     try {
       const rows = await apiFetch(`/attendance?date=${encodeURIComponent(date)}`, {}, nextToken)
-      setAttendance(rows)
+      setAttendance(Array.isArray(rows) ? rows.map((row) => normalizeAttendanceRow(row)) : [])
     } catch {
       // UI polling should fail silently
     }
@@ -1403,7 +1461,7 @@ function AdminPage() {
                 <p className="muted">Workforce Attendance Management</p>
                 <p className="muted small">Admin: <strong>{username}</strong></p>
                 <p className="muted small">
-                  Session auto-refresh: {sessionRefreshedAt ? `Last refresh at ${new Date(sessionRefreshedAt).toLocaleTimeString()}` : 'Enabled (waiting for next cycle)'}
+                  Session auto-refresh: {sessionRefreshedAt ? `Last refresh at ${formatTimeInIST(sessionRefreshedAt)}` : 'Enabled (waiting for next cycle)'}
                 </p>
                 {!!sessionExpiringSoon && <p className="error">{sessionExpiringSoon}</p>}
                 <div className="admin-status-badges">
@@ -2372,8 +2430,8 @@ function UserPage() {
   const [employee, setEmployee] = useState(null)
   const [attendanceState, setAttendanceState] = useState(cachedAttendance.status || '')
   const [attendanceTimes, setAttendanceTimes] = useState({
-    checkIn: cachedAttendance.checkIn || '',
-    checkOut: cachedAttendance.checkOut || '',
+    checkIn: '',
+    checkOut: '',
   })
   const [cameraOn, setCameraOn] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
@@ -2453,9 +2511,9 @@ function UserPage() {
             ...base,
             video: {
               facingMode: { ideal: 'user' },
-              width: mobile ? { ideal: 360, max: 480 } : { ideal: 480, max: 640 },
-              height: mobile ? { ideal: 480, max: 640 } : { ideal: 360, max: 480 },
-              frameRate: { ideal: mobile ? 16 : 20, max: 24 },
+              width: mobile ? { ideal: 480, max: 640 } : { ideal: 640, max: 960 },
+              height: mobile ? { ideal: 640, max: 960 } : { ideal: 480, max: 720 },
+              frameRate: { ideal: mobile ? 15 : 20, max: 24 },
             },
           },
           { ...base, video: { facingMode: 'user' } },
@@ -2508,7 +2566,7 @@ function UserPage() {
       setEmployee(data.employee)
       const cached = readAttendanceCache(data.token)
       setAttendanceState(cached.status || '')
-      setAttendanceTimes({ checkIn: cached.checkIn || '', checkOut: cached.checkOut || '' })
+      setAttendanceTimes({ checkIn: '', checkOut: '' })
       setStatus('Login successful')
       setMessage('Authenticated')
       clearRetryAction()
@@ -2531,8 +2589,8 @@ function UserPage() {
       const nextStatus = String(data?.status || '').toLowerCase()
       setAttendanceState(nextStatus)
       const nextTimes = {
-        checkIn: data?.check_in || '',
-        checkOut: data?.check_out || '',
+        checkIn: formatAttendanceTimeFromUtc(data?.check_in_at, data?.check_in || '', data?.date),
+        checkOut: formatAttendanceTimeFromUtc(data?.check_out_at, data?.check_out || '', data?.date),
       }
       setAttendanceTimes(nextTimes)
       writeAttendanceCache(nextToken, {
@@ -2676,10 +2734,10 @@ function UserPage() {
     if (!cameraOn || !token || employee?.must_change_password) return
     const kickoff = setTimeout(() => {
       checkInNow(true)
-    }, 120)
+    }, 300)
     const timer = setInterval(() => {
       checkInNow(true)
-    }, 250)
+    }, 900)
     return () => {
       clearTimeout(kickoff)
       clearInterval(timer)
@@ -2811,8 +2869,10 @@ function UserPage() {
       const cropH = Math.max(1, Math.round(srcH * cropFactor))
       const cropX = Math.max(0, Math.round((srcW - cropW) / 2))
       const cropY = Math.max(0, Math.round((srcH - cropH) / 2))
-      canvas.width = 320
-      canvas.height = 240
+      const targetW = mobile ? 360 : 480
+      const targetH = Math.round(targetW * (cropH / cropW))
+      canvas.width = targetW
+      canvas.height = targetH
       const ctx = canvas.getContext('2d')
       const tokenClaims = decodeToken(activeToken || '') || {}
       const sessionJti = String(tokenClaims.jti || '')
@@ -2835,7 +2895,7 @@ function UserPage() {
       for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
         try {
           ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, canvas.width, canvas.height)
-          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.5))
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.65))
           if (!blob) throw new Error('Unable to capture scan image')
           const formData = new FormData()
           formData.append('image', blob, 'scan.jpg')
@@ -2850,6 +2910,8 @@ function UserPage() {
           data = await apiFetch('/scan_attendance', {
             method: 'POST',
             body: formData,
+            timeoutMs: 2000,
+            retries: 0,
           }, activeToken)
 
           if (data?.status === 'wrong_data') {
@@ -2873,7 +2935,7 @@ function UserPage() {
             || text.includes('unable to verify')
           )
           if (attempt < maxRetries && retryableScanError) {
-            await new Promise((resolve) => setTimeout(resolve, 500))
+            await new Promise((resolve) => setTimeout(resolve, 300 * attempt))
             continue
           }
           throw err
@@ -2889,12 +2951,12 @@ function UserPage() {
         setAttendanceState(String(data.status).toLowerCase())
       }
       const nextTimes = {
-        checkIn: data?.check_in || attendanceTimes.checkIn,
-        checkOut: data?.check_out || attendanceTimes.checkOut,
+        checkIn: formatAttendanceTimeFromUtc(data?.check_in_at, data?.check_in || attendanceTimes.checkIn, data?.date),
+        checkOut: formatAttendanceTimeFromUtc(data?.check_out_at, data?.check_out || attendanceTimes.checkOut, data?.date),
       }
       setAttendanceTimes((old) => ({
-        checkIn: data?.check_in || old.checkIn,
-        checkOut: data?.check_out || old.checkOut,
+        checkIn: formatAttendanceTimeFromUtc(data?.check_in_at, data?.check_in || old.checkIn, data?.date),
+        checkOut: formatAttendanceTimeFromUtc(data?.check_out_at, data?.check_out || old.checkOut, data?.date),
       }))
       writeAttendanceCache(activeToken, {
         status: String(data?.status || attendanceState || '').toLowerCase(),
@@ -3151,23 +3213,35 @@ function UserPage() {
   const locationStatusLabel = geofenceDisabled
     ? 'Location Disabled by Admin'
     : (geofenceOutside ? 'Outside Geofence' : 'Inside Office')
+  const scanFeedbackType = isScanning ? 'scanning' : (error ? 'error' : (todayCheckedIn ? 'success' : 'neutral'))
+  const scanFeedbackTitle = isScanning
+    ? 'Scanning in progress'
+    : (error ? 'Scan issue detected' : (todayCheckedIn ? 'Attendance updated' : 'Ready to scan'))
+  const scanFeedbackText = isScanning
+    ? 'Please keep your face centered and hold still.'
+    : (error || statusText || 'Start camera and tap Mark Attendance.')
 
   return (
     <main className="page attendance-shell">
       <section className="attendance-topbar card">
         <div className="attendance-topbar-left">
           <h2>Employee Check-In</h2>
+          <p className="muted">Fast, secure facial attendance</p>
         </div>
         <div className="attendance-topbar-right">
           <p className="muted small">Name: {employee?.name || '-'} • Username: {employee?.login_id || '-'}</p>
+          <p className="muted small">Department: {employee?.department || 'General'}</p>
           <p className="muted small">
-            Session auto-refresh: {sessionRefreshedAt ? `Last refresh at ${new Date(sessionRefreshedAt).toLocaleTimeString()}` : 'Enabled (waiting for next cycle)'}
+            Session auto-refresh: {sessionRefreshedAt ? `Last refresh at ${formatTimeInIST(sessionRefreshedAt)}` : 'Enabled (waiting for next cycle)'}
           </p>
           {!!sessionExpiringSoon && <p className="error">{sessionExpiringSoon}</p>}
           <div className="attendance-status-badges">
             <span className={`status-badge ${cameraOn ? 'ok' : ''}`}>Camera: {cameraOn ? 'Ready' : 'Off'}</span>
             <span className={`status-badge ${geofenceDisabled ? '' : (locationReady ? 'ok' : '')}`}>
               Location: {geofenceDisabled ? 'Disabled by Admin' : (locationReady ? 'Ready' : 'Missing')}
+            </span>
+            <span className={`status-badge scan-state-badge ${isScanning ? 'is-scanning' : (todayCheckedIn ? 'is-success' : '')}`}>
+              {isScanning ? 'Scanning...' : (todayCheckedIn ? 'Face detected' : 'Awaiting scan')}
             </span>
           </div>
         </div>
@@ -3215,11 +3289,15 @@ function UserPage() {
             </div>
 
             <div className="attendance-section">
-              <h3>Info</h3>
+              <h3>Live Feedback</h3>
               <div className="status-badge-row">
                 <span className={`mini-badge ${todayCheckedIn ? 'ok' : 'warn'}`}>{attendanceStatusLabel}</span>
                 <span className={`mini-badge ${cameraOn ? 'ok' : 'warn'}`}>{cameraStatusLabel}</span>
                 <span className={`mini-badge ${geofenceOutside ? 'warn' : 'ok'}`}>{locationStatusLabel}</span>
+              </div>
+              <div className={`scan-feedback ${scanFeedbackType}`}>
+                <p className="scan-feedback-title">{scanFeedbackTitle}</p>
+                <p className="scan-feedback-text">{scanFeedbackText}</p>
               </div>
               {!!challengeInstruction && <p className="status-text">Challenge: {challengeInstruction}</p>}
               <p className="muted small">Location: {geo.lat && geo.lng ? `${Number(geo.lat).toFixed(5)}, ${Number(geo.lng).toFixed(5)} (±${Math.round(Number(geo.accuracy || 0))}m)` : 'Not captured'}</p>
@@ -3246,6 +3324,15 @@ function UserPage() {
                 <div className="camera-preview-box">
                   <video ref={videoRef} autoPlay playsInline muted className="preview" />
                   {!cameraOn && <div className="camera-placeholder">Camera not started</div>}
+                  {cameraOn && isScanning && (
+                    <>
+                      <div className="camera-scanning-border" />
+                      <div className="camera-scanning-overlay">
+                        <span className="camera-scanning-loader" aria-hidden="true" />
+                        <span className="camera-scanning-text">Scanning face...</span>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -3260,7 +3347,12 @@ function UserPage() {
                   onClick={checkInNow}
                   disabled={!cameraOn || employee?.must_change_password || isScanning}
                 >
-                  {isScanning ? 'Scanning...' : primaryButtonLabel}
+                  {isScanning ? (
+                    <span className="btn-loading-content">
+                      <span className="btn-inline-loader" aria-hidden="true" />
+                      <span>Scanning face...</span>
+                    </span>
+                  ) : (todayCheckedIn && !checkedOutAtText ? 'Mark Check-Out' : primaryButtonLabel)}
                 </button>
               </div>
             </div>

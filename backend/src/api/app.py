@@ -37,7 +37,7 @@ if __package__ is None or __package__ == "":
     if str(_backend_root) not in sys.path:
         sys.path.insert(0, str(_backend_root))
 
-from src.attendance.attendance_manager import AttendanceManager
+from src.attendance.attendance_manager import AttendanceManager, ist_now, normalize_attendance_row_times
 from src.recognize_faces import FaceRecognizer
 from src.security import (
     admin_auth_required,
@@ -82,6 +82,10 @@ except Exception:
     Compress = None
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Kolkata").strip() or "Asia/Kolkata"
+os.environ["TZ"] = APP_TIMEZONE
+if hasattr(time, "tzset"):
+    time.tzset()
 
 
 def _load_environment():
@@ -241,12 +245,14 @@ if orjson is not None:
     app.json_provider_class = _OrjsonProvider
     app.json = app.json_provider_class(app)
 
-allowed_origins = [
-    origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5001").split(",")
-    if origin.strip()
-]
-CORS(app, resources={r"/*": {"origins": allowed_origins}})
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "*").strip()
+if allowed_origins_env == "*":
+    cors_origins = "*"
+else:
+    cors_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+    if not cors_origins:
+        cors_origins = "*"
+CORS(app, resources={r"/*": {"origins": cors_origins}})
 
 if Compress is not None:
     app.config["COMPRESS_ALGORITHM"] = ["gzip"]
@@ -2276,7 +2282,7 @@ def user_attendance_today():
     except InvalidId:
         return jsonify({"message": "Invalid user token"}), 401
 
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = ist_now().strftime("%Y-%m-%d")
     row = db.attendance.find_one({"employee_id": oid, "date": date_str})
 
     if not row:
@@ -2288,6 +2294,7 @@ def user_attendance_today():
             "check_out": None,
         })
 
+    row = normalize_attendance_row_times(row)
     status = "checked_out" if row.get("check_out") else "checked_in"
     return jsonify({
         "status": status,
@@ -2295,6 +2302,8 @@ def user_attendance_today():
         "checked_in": True,
         "check_in": row.get("check_in"),
         "check_out": row.get("check_out"),
+        "check_in_at": row.get("check_in_at"),
+        "check_out_at": row.get("check_out_at"),
     })
 
 
@@ -2661,10 +2670,7 @@ def scan_attendance():
         return jsonify(cached), 200
 
     arr = np.frombuffer(raw, np.uint8)
-    decode_flag = cv2.IMREAD_COLOR
-    if len(raw) > 450_000:
-        decode_flag = cv2.IMREAD_REDUCED_COLOR_2
-    frame = cv2.imdecode(arr, decode_flag)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if frame is None:
         return jsonify({"status": "wrong_data", "message": "Invalid image format"}), 400
 
@@ -2679,10 +2685,24 @@ def scan_attendance():
         if not str(expected_name or "").strip():
             return jsonify({"status": "wrong_data", "message": "Invalid user session"}), 401
 
+        scan_api_start = time.perf_counter()
         result = face_recognizer.scan_frame(
             frame,
             expected_name=expected_name,
             challenge_action=challenge_action,
+        )
+        scan_api_ms = round((time.perf_counter() - scan_api_start) * 1000, 1)
+        logger.info(
+            "scan_frame_completed",
+            extra={
+                "event": "scan_frame",
+                "request_id": getattr(g, "request_id", None),
+                "expected_name": expected_name,
+                "result_status": result.get("status"),
+                "match_distance": result.get("match_distance"),
+                "scan_time_ms": result.get("scan_time_ms"),
+                "api_overhead_ms": round(scan_api_ms - (result.get("scan_time_ms") or 0), 1),
+            },
         )
 
         normalized_expected = str(expected_name or "").strip().lower()
@@ -2772,7 +2792,7 @@ def manual_attendance_request():
     if not employee:
         return jsonify({"message": "Employee not found. Use registered employee name"}), 404
 
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = ist_now().strftime("%Y-%m-%d")
     existing_attendance = db.attendance.find_one({"employee_id": employee.get("_id"), "date": date_str})
     if existing_attendance:
         return jsonify({
@@ -2822,7 +2842,7 @@ def manual_attendance_request():
     cv2.imwrite(str(target), frame)
     image_path = str(target)
 
-    now = datetime.now()
+    now = ist_now()
     doc = {
         "employee_name": employee_name,
         "date": date_str,
@@ -2875,7 +2895,7 @@ def approve_manual_request(request_id):
         return jsonify({"message": attendance_result.get("message", "Unable to mark attendance")}), 400
 
     if attendance_result.get("status") == "already_recorded":
-        now = datetime.now()
+        now = ist_now()
         db.manual_requests.update_one(
             {"_id": oid},
             {
@@ -2897,7 +2917,7 @@ def approve_manual_request(request_id):
             "attendance": attendance_result,
         }), 409
 
-    now = datetime.now()
+    now = ist_now()
     db.manual_requests.update_one(
         {"_id": oid},
         {
@@ -2935,7 +2955,7 @@ def reject_manual_request(request_id):
 
     payload = request.get_json(silent=True) or {}
     reason = (payload.get("reason") or "Rejected by admin").strip()
-    now = datetime.now()
+    now = ist_now()
     db.manual_requests.update_one(
         {"_id": oid},
         {
@@ -3250,7 +3270,7 @@ def handle_large_upload(_error):
 
 @app.errorhandler(429)
 def handle_rate_limit(_error):
-    return jsonify({"status": "wrong_data", "message": "User not match"}), 429
+    return jsonify({"status": "rate_limited", "message": "Too many requests. Please wait a moment and try again."}), 429
 
 
 @app.errorhandler(Exception)
