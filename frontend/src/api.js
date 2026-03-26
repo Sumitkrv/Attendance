@@ -1,4 +1,4 @@
-import { API_BASE, API_CONNECTION_ERROR_MESSAGE } from './config/apiConfig'
+import { BASE_URL, API_CONNECTION_ERROR_MESSAGE } from './config/apiConfig'
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -24,7 +24,7 @@ function readLatestStoredToken() {
 }
 
 export async function apiFetch(path, options = {}, token) {
-  if (!API_BASE) {
+  if (!BASE_URL) {
     throw makeApiError(API_CONNECTION_ERROR_MESSAGE, {
       retryable: false,
       status: 0,
@@ -59,7 +59,7 @@ export async function apiFetch(path, options = {}, token) {
     let response
     try {
       const endpoint = String(path || '').startsWith('/') ? path : `/${path}`
-      response = await fetch(`${API_BASE}${endpoint}`, {
+      response = await fetch(`${BASE_URL}${endpoint}`, {
         ...requestOptions,
         signal: controller.signal,
       })
