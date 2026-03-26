@@ -250,6 +250,9 @@ DEFAULT_CORS_ORIGINS = [
 
 allowed_origins_env = str(os.getenv("ALLOWED_ORIGINS", "")).strip()
 cors_allow_all = str(os.getenv("CORS_ALLOW_ALL", "false")).strip().lower() in {"1", "true", "yes", "on"}
+cors_allowed_origin_regex_env = str(
+    os.getenv("CORS_ALLOWED_ORIGIN_REGEX", r"^https://attendance-frontend(?:-[a-z0-9-]+)?\.vercel\.app$")
+).strip()
 
 if allowed_origins_env:
     env_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
@@ -258,12 +261,28 @@ else:
 
 cors_origins = list(dict.fromkeys(DEFAULT_CORS_ORIGINS + env_origins))
 
+try:
+    cors_allowed_origin_regex = re.compile(cors_allowed_origin_regex_env, flags=re.IGNORECASE)
+except re.error:
+    cors_allowed_origin_regex = None
+
+
+def _is_origin_allowed(origin: str) -> bool:
+    value = str(origin or "").strip()
+    if not value:
+        return False
+    if value in cors_origins:
+        return True
+    if cors_allowed_origin_regex is not None and cors_allowed_origin_regex.match(value):
+        return True
+    return False
+
 if cors_allow_all:
     CORS(app)
 else:
     CORS(
         app,
-        resources={r"/*": {"origins": cors_origins}},
+        resources={r"/*": {"origins": cors_origins + ([cors_allowed_origin_regex_env] if cors_allowed_origin_regex else [])}},
         supports_credentials=True,
         allow_headers=["Content-Type", "Authorization"],
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -387,7 +406,7 @@ def _set_security_headers(response):
     request_origin = request.headers.get("Origin", "").strip()
     if cors_allow_all:
         response.headers["Access-Control-Allow-Origin"] = "*"
-    elif request_origin and request_origin in cors_origins:
+    elif _is_origin_allowed(request_origin):
         response.headers["Access-Control-Allow-Origin"] = request_origin
     else:
         response.headers["Access-Control-Allow-Origin"] = "https://attendance-frontend-virid-one.vercel.app"
