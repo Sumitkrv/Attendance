@@ -3,6 +3,8 @@ import math
 import re
 import random
 import shutil
+import base64
+import binascii
 import threading
 import uuid
 import time
@@ -144,6 +146,11 @@ class JsonLogFormatter(logging.Formatter):
             "duration_ms",
             "remote_addr",
             "app_env",
+            "content_type",
+            "content_length",
+            "form_keys",
+            "file_keys",
+            "validation_error",
         ):
             val = getattr(record, key, None)
             if val is not None:
@@ -170,6 +177,45 @@ def _setup_logging():
 
 _setup_logging()
 logger = logging.getLogger("attendance.api")
+
+
+def _log_missing_env_warnings():
+    required_common = ["SECRET_KEY", "MONGODB_URI", "MONGODB_DB", "ALLOWED_ORIGINS"]
+    required_prod_only = [
+        "ADMIN_USERNAME",
+        "ADMIN_PASSWORD_HASH",
+        "OFFICE_LAT",
+        "OFFICE_LNG",
+        "OFFICE_RADIUS_METERS",
+    ]
+
+    required = list(required_common)
+    if APP_ENV in {"prod", "production"}:
+        required.extend(required_prod_only)
+
+    missing = [key for key in required if not str(os.getenv(key, "")).strip()]
+    if missing:
+        logger.warning(
+            "missing_env_vars: %s",
+            ", ".join(missing),
+            extra={"event": "missing_env_vars", "app_env": APP_ENV},
+        )
+
+
+def _required_env_keys_for_current_env() -> list:
+    required_common = ["SECRET_KEY", "MONGODB_URI", "MONGODB_DB", "ALLOWED_ORIGINS"]
+    required_prod_only = [
+        "ADMIN_USERNAME",
+        "ADMIN_PASSWORD_HASH",
+        "OFFICE_LAT",
+        "OFFICE_LNG",
+        "OFFICE_RADIUS_METERS",
+    ]
+
+    keys = list(required_common)
+    if APP_ENV in {"prod", "production"}:
+        keys.extend(required_prod_only)
+    return keys
 
 
 def _setup_sentry():
@@ -224,6 +270,7 @@ def _validate_required_prod_env():
 
 
 _validate_required_prod_env()
+_log_missing_env_warnings()
 
 
 class _OrjsonProvider(DefaultJSONProvider):
@@ -284,7 +331,7 @@ else:
         app,
         resources={r"/*": {"origins": cors_origins + ([cors_allowed_origin_regex_env] if cors_allowed_origin_regex else [])}},
         supports_credentials=True,
-        allow_headers=["Content-Type", "Authorization"],
+        allow_headers=["Content-Type", "Authorization", "Cache-Control", "cache-control"],
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     )
 
@@ -359,6 +406,9 @@ enable_office_geofence = str(os.getenv("ENABLE_OFFICE_GEOFENCE", "true")).lower(
 force_office_geofence = str(os.getenv("FORCE_OFFICE_GEOFENCE", "false")).lower() in {"1", "true", "yes", "on"}
 min_password_length = max(6, int(os.getenv("MIN_PASSWORD_LENGTH", "8")))
 require_password_mix = str(os.getenv("REQUIRE_PASSWORD_MIX", "true")).lower() in {"1", "true", "yes", "on"}
+enable_debug_env_endpoint = str(
+    os.getenv("ENABLE_DEBUG_ENV_ENDPOINT", "false" if APP_ENV in {"prod", "production"} else "true")
+).lower() in {"1", "true", "yes", "on"}
 
 
 def _validate_password_policy(password: str, label: str = "Password") -> Optional[str]:
@@ -411,7 +461,7 @@ def _set_security_headers(response):
     else:
         response.headers["Access-Control-Allow-Origin"] = "https://attendance-frontend-virid-one.vercel.app"
 
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,Cache-Control,cache-control"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
     if not cors_allow_all:
         response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -638,7 +688,8 @@ def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> flo
     return radius * c
 
 
-def _validate_scan_location(claims: Optional[dict] = None):
+def _validate_scan_location(claims: Optional[dict] = None, payload: Optional[dict] = None):
+    payload = payload or {}
     geofence_active = bool(enable_office_geofence) or bool(force_office_geofence)
     if not geofence_active:
         return {
@@ -658,8 +709,8 @@ def _validate_scan_location(claims: Optional[dict] = None):
             "message": "Office location is not configured",
         }
 
-    lat_raw = request.form.get("lat")
-    lng_raw = request.form.get("lng")
+    lat_raw = payload.get("lat")
+    lng_raw = payload.get("lng")
     if lat_raw is None or lng_raw is None:
         return {
             "enabled": True,
@@ -667,10 +718,14 @@ def _validate_scan_location(claims: Optional[dict] = None):
             "code": 400,
             "status": "location_required",
             "message": "Location is required for attendance",
+            "details": {
+                "required_fields": ["lat", "lng"],
+                "received_fields": sorted(list(payload.keys())),
+            },
         }
 
     now_ms = int(time.time() * 1000)
-    location_captured_at_ms = _parse_location_captured_at_ms(request.form.get("location_captured_at_ms"))
+    location_captured_at_ms = _parse_location_captured_at_ms(payload.get("location_captured_at_ms"))
     if location_captured_at_ms is None:
         location_captured_at_ms = now_ms
 
@@ -700,11 +755,15 @@ def _validate_scan_location(claims: Optional[dict] = None):
                     "code": 403,
                     "status": "location_before_login",
                     "message": "Location must be captured after login",
+                    "details": {
+                        "location_captured_at_ms": location_captured_at_ms,
+                        "token_iat_ms": issued_at_ms,
+                    },
                 }
         except (TypeError, ValueError):
             pass
 
-    location_session_jti = (request.form.get("location_session_jti") or "").strip()
+    location_session_jti = (payload.get("location_session_jti") or "").strip()
     token_jti = str(claims.get("jti") or "").strip()
     if token_jti and location_session_jti and location_session_jti != token_jti:
         return {
@@ -713,6 +772,10 @@ def _validate_scan_location(claims: Optional[dict] = None):
             "code": 403,
             "status": "location_session_mismatch",
             "message": "Location token mismatch. Please login again.",
+            "details": {
+                "location_session_jti": location_session_jti,
+                "token_jti": token_jti,
+            },
         }
 
     try:
@@ -725,6 +788,10 @@ def _validate_scan_location(claims: Optional[dict] = None):
             "code": 400,
             "status": "invalid_location",
             "message": "Invalid location coordinates",
+            "details": {
+                "lat": lat_raw,
+                "lng": lng_raw,
+            },
         }
 
     if lat < -90 or lat > 90 or lng < -180 or lng > 180:
@@ -734,6 +801,10 @@ def _validate_scan_location(claims: Optional[dict] = None):
             "code": 400,
             "status": "invalid_location",
             "message": "Invalid location range",
+            "details": {
+                "lat": lat,
+                "lng": lng,
+            },
         }
 
     distance_m = _haversine_meters(lat, lng, office_lat, office_lng)
@@ -1382,6 +1453,32 @@ def readiness_check():
             }
         ),
         200 if ready else 503,
+    )
+
+
+@app.get("/debug/env")
+@admin_auth_required
+def debug_env():
+    if not enable_debug_env_endpoint:
+        return jsonify({"error": "not_found", "message": "Endpoint disabled"}), 404
+
+    keys = _required_env_keys_for_current_env()
+    present = {key: bool(str(os.getenv(key, "")).strip()) for key in keys}
+    missing = [key for key, is_present in present.items() if not is_present]
+
+    return jsonify(
+        {
+            "status": "ok",
+            "app_env": APP_ENV,
+            "env_file": LOADED_ENV_FILE,
+            "db_mode": "mock" if using_mock_db else "mongo",
+            "db_name": db_name,
+            "cors_allow_all": bool(cors_allow_all),
+            "allowed_origins_count": len(cors_origins),
+            "required_env": present,
+            "missing_env": missing,
+            "debug_endpoint_enabled": bool(enable_debug_env_endpoint),
+        }
     )
 
 
@@ -2675,13 +2772,38 @@ def scan_attendance():
     if claims.get("must_change_password"):
         return jsonify({"status": "password_change_required", "message": "Please change password before attendance scan"}), 403
 
+    json_payload = request.get_json(silent=True) if request.is_json else {}
+    if not isinstance(json_payload, dict):
+        json_payload = {}
+
+    form_payload = request.form.to_dict(flat=True) if request.form else {}
+    scan_payload = dict(form_payload)
+    for key in ("lat", "lng", "accuracy", "location_captured_at_ms", "location_session_jti", "image_base64", "challenge_id"):
+        if key not in scan_payload and json_payload.get(key) is not None:
+            scan_payload[key] = json_payload.get(key)
+
+    logger.info(
+        "scan_attendance_request",
+        extra={
+            "event": "scan_attendance_request",
+            "request_id": getattr(g, "request_id", None),
+            "method": request.method,
+            "path": request.path,
+            "app_env": APP_ENV,
+            "content_type": request.headers.get("Content-Type"),
+            "content_length": request.content_length,
+            "form_keys": sorted(list(form_payload.keys())),
+            "file_keys": sorted(list(request.files.keys())),
+        },
+    )
+
     if not bool(enable_office_geofence) and not bool(force_office_geofence):
         return jsonify({
             "status": "geofence_disabled",
             "message": "Location verification is disabled by admin. Enable geofence in admin settings to mark attendance.",
         }), 403
 
-    location_check = _validate_scan_location(claims)
+    location_check = _validate_scan_location(claims, payload=scan_payload)
     if not location_check.get("ok", False):
         code = int(location_check.get("code") or 400)
         payload = {
@@ -2691,9 +2813,22 @@ def scan_attendance():
         for key in ("distance_m", "allowed_radius_m", "effective_radius_m", "accuracy_m", "location_age_ms"):
             if key in location_check:
                 payload[key] = location_check[key]
+        if "details" in location_check:
+            payload["details"] = location_check.get("details")
+        logger.warning(
+            "scan_attendance_location_validation_failed",
+            extra={
+                "event": "scan_attendance_location_validation_failed",
+                "request_id": getattr(g, "request_id", None),
+                "method": request.method,
+                "path": request.path,
+                "app_env": APP_ENV,
+                "validation_error": payload.get("status"),
+            },
+        )
         return jsonify(payload), code
 
-    challenge_id = (request.form.get("challenge_id") or "").strip()
+    challenge_id = str(scan_payload.get("challenge_id") or request.form.get("challenge_id") or "").strip()
     challenge_action = None
     challenge_instruction = None
     if challenge_id:
@@ -2703,12 +2838,74 @@ def scan_attendance():
             challenge_instruction = challenge_check.get("instruction")
 
     image_file = request.files.get("image")
-    if not image_file:
-        return jsonify({"status": "wrong_data", "message": "Image file is required"}), 400
+    uploaded_image_present = bool(image_file)
+    raw = None
+    if image_file:
+        raw = image_file.read()
+    elif scan_payload.get("image_base64"):
+        image_base64 = str(scan_payload.get("image_base64") or "").strip()
+        if image_base64.startswith("data:image") and "," in image_base64:
+            image_base64 = image_base64.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(image_base64, validate=True)
+        except (binascii.Error, ValueError):
+            logger.warning(
+                "scan_attendance_invalid_image_base64",
+                extra={
+                    "event": "scan_attendance_invalid_image_base64",
+                    "request_id": getattr(g, "request_id", None),
+                    "method": request.method,
+                    "path": request.path,
+                    "app_env": APP_ENV,
+                    "validation_error": "invalid_image_base64",
+                },
+            )
+            return (
+                jsonify(
+                    {
+                        "error": "validation_error",
+                        "status": "wrong_data",
+                        "message": "Invalid image_base64 payload",
+                        "details": {
+                            "required_fields": ["image"],
+                            "accepted_content_types": ["multipart/form-data", "application/json"],
+                        },
+                    }
+                ),
+                400,
+            )
 
-    raw = image_file.read()
+    if uploaded_image_present and raw == b"":
+        return jsonify({"error": "validation_error", "status": "wrong_data", "message": "Empty image"}), 400
+
     if not raw:
-        return jsonify({"status": "wrong_data", "message": "Empty image"}), 400
+        logger.warning(
+            "scan_attendance_missing_image",
+            extra={
+                "event": "scan_attendance_missing_image",
+                "request_id": getattr(g, "request_id", None),
+                "method": request.method,
+                "path": request.path,
+                "app_env": APP_ENV,
+                "validation_error": "missing_image",
+            },
+        )
+        return (
+            jsonify(
+                {
+                    "error": "validation_error",
+                    "status": "wrong_data",
+                    "message": "Image is required. Send multipart/form-data with field 'image' (file) or JSON field 'image_base64'.",
+                    "details": {
+                        "required_fields": ["image", "lat", "lng"],
+                        "received_form_fields": sorted(list(form_payload.keys())),
+                        "received_file_fields": sorted(list(request.files.keys())),
+                        "content_type": request.headers.get("Content-Type"),
+                    },
+                }
+            ),
+            400,
+        )
 
     cache_digest = hashlib.sha1(raw).hexdigest()
     cache_key = f"{claims.get('employee_id') or claims.get('login_id')}:{cache_digest}"
@@ -2800,9 +2997,36 @@ def scan_attendance():
             code = 400
         else:
             code = 422
+        if code == 422:
+            return (
+                jsonify(
+                    {
+                        "error": "scan_validation_failed",
+                        **result,
+                        "details": {
+                            "hint": "Ensure your face is centered, well lit, and clearly visible to camera.",
+                            "expected_payload": {
+                                "content_type": "multipart/form-data",
+                                "fields": ["image", "lat", "lng", "accuracy", "location_captured_at_ms", "location_session_jti"],
+                            },
+                        },
+                    }
+                ),
+                422,
+            )
         return jsonify(result), code
     except Exception as e:
-        return jsonify({"status": "wrong_data", "message": str(e)}), 400
+        logger.exception(
+            "scan_attendance_exception",
+            extra={
+                "event": "scan_attendance_exception",
+                "request_id": getattr(g, "request_id", None),
+                "method": request.method,
+                "path": request.path,
+                "app_env": APP_ENV,
+            },
+        )
+        return jsonify({"error": "scan_processing_error", "status": "wrong_data", "message": str(e)}), 400
 
 
 @app.get("/scan_challenge")
@@ -3112,9 +3336,93 @@ def update_geofence_settings():
 @app.get("/attendance")
 @admin_auth_required
 def get_attendance():
-    date = request.args.get("date")
-    rows = attendance_manager.list_attendance(date=date)
-    return jsonify(rows)
+    date_raw = str(request.args.get("date", "")).strip()
+    date_value = None
+
+    logger.info(
+        "attendance_fetch_requested",
+        extra={
+            "event": "attendance_fetch_requested",
+            "request_id": getattr(g, "request_id", None),
+            "method": request.method,
+            "path": request.path,
+            "app_env": APP_ENV,
+        },
+    )
+
+    if date_raw:
+        try:
+            date_value = datetime.strptime(date_raw, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            logger.warning(
+                "attendance_invalid_date_format: %s",
+                date_raw,
+                extra={
+                    "event": "attendance_invalid_date_format",
+                    "request_id": getattr(g, "request_id", None),
+                    "method": request.method,
+                    "path": request.path,
+                    "app_env": APP_ENV,
+                },
+            )
+            return (
+                jsonify(
+                    {
+                        "error": "invalid_date",
+                        "message": "Invalid date format. Use YYYY-MM-DD.",
+                        "details": {"date": date_raw},
+                    }
+                ),
+                400,
+            )
+
+    try:
+        rows = attendance_manager.list_attendance(date=date_value)
+        if not isinstance(rows, list):
+            rows = []
+        return jsonify(rows)
+    except PyMongoError as error:
+        logger.exception(
+            "attendance_query_failed",
+            extra={
+                "event": "attendance_query_failed",
+                "request_id": getattr(g, "request_id", None),
+                "method": request.method,
+                "path": request.path,
+                "app_env": APP_ENV,
+            },
+        )
+        return (
+            jsonify(
+                {
+                    "error": "database_error",
+                    "message": "Failed to fetch attendance records.",
+                    "details": str(error),
+                }
+            ),
+            500,
+        )
+    except Exception as error:
+        logger.exception(
+            "attendance_fetch_failed",
+            extra={
+                "event": "attendance_fetch_failed",
+                "request_id": getattr(g, "request_id", None),
+                "method": request.method,
+                "path": request.path,
+                "app_env": APP_ENV,
+            },
+        )
+        return (
+            jsonify(
+                {
+                    "error": "internal_error",
+                    "message": "Unable to fetch attendance records.",
+                    "details": str(error),
+                }
+            ),
+            500,
+        )
 
 
 @app.get("/employees")
@@ -3345,7 +3653,16 @@ def handle_unhandled_exception(error):
     )
     if sentry_sdk is not None and SENTRY_ENABLED:
         sentry_sdk.capture_exception(error)
-    return jsonify({"message": "Internal server error"}), 500
+    return (
+        jsonify(
+            {
+                "error": "internal_error",
+                "message": "Internal server error",
+                "details": {"request_id": getattr(g, "request_id", None), "path": request.path if request else None},
+            }
+        ),
+        500,
+    )
 
 
 if __name__ == "__main__":

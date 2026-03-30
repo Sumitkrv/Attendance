@@ -37,7 +37,6 @@ export async function apiFetch(path, options = {}, token) {
   const retryDelayMs = Number(options.retryDelayMs || 450)
   const effectiveToken = token || readLatestStoredToken()
   const headers = {
-    'Cache-Control': 'no-cache',
     ...(options.headers || {}),
   }
   if (effectiveToken && !headers.Authorization) headers.Authorization = `Bearer ${effectiveToken}`
@@ -46,6 +45,10 @@ export async function apiFetch(path, options = {}, token) {
     mode: 'cors',
     ...options,
     headers,
+  }
+  if (typeof FormData !== 'undefined' && requestOptions.body instanceof FormData) {
+    delete requestOptions.headers['Content-Type']
+    delete requestOptions.headers['content-type']
   }
   delete requestOptions.retries
   delete requestOptions.retryDelayMs

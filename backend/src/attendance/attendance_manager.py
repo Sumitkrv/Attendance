@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 from typing import Optional
 from bson import ObjectId
@@ -9,6 +9,12 @@ try:
     IST_TZ = ZoneInfo("Asia/Kolkata")
 except Exception:
     IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+
+ENTRY_ON_TIME_START = dt_time(hour=11, minute=0)
+ENTRY_ON_TIME_END = dt_time(hour=11, minute=30)
+EXIT_ON_TIME_START = dt_time(hour=18, minute=30)
+EXIT_ON_TIME_END = dt_time(hour=19, minute=0)
 
 
 def utc_now() -> datetime:
@@ -85,6 +91,30 @@ def normalize_attendance_row_times(row: Optional[dict]) -> Optional[dict]:
     return normalized
 
 
+def _entry_status_for_time(now_ist: datetime) -> str:
+    """Entry timing status based on IST server time.
+
+    Rules:
+    - 11:00 to 11:30 -> On Time
+    - after 11:30 -> Late
+    - before 11:00 -> On Time (allowed early entry)
+    """
+    now_local_time = now_ist.timetz().replace(tzinfo=None)
+    return "Late" if now_local_time > ENTRY_ON_TIME_END else "On Time"
+
+
+def _exit_status_for_time(now_ist: datetime) -> str:
+    """Exit timing status based on IST server time.
+
+    Rules:
+    - before 18:30 -> Left Early
+    - 18:30 to 19:00 -> On Time Exit
+    - after 19:00 -> On Time Exit
+    """
+    now_local_time = now_ist.timetz().replace(tzinfo=None)
+    return "Left Early" if now_local_time < EXIT_ON_TIME_START else "On Time Exit"
+
+
 class AttendanceManager:
     """Handles attendance write/read logic and duplicate prevention."""
 
@@ -129,11 +159,16 @@ class AttendanceManager:
         record = self.attendance.find_one({"employee_id": employee["_id"], "date": date_str})
 
         if not record:
+            entry_status = _entry_status_for_time(now_ist)
             self.attendance.insert_one(
                 {
                     "employee_id": employee["_id"],
                     "employee_name": employee_name,
                     "date": date_str,
+                    "status": entry_status,
+                    "entry_status": entry_status,
+                    "exit_status": None,
+                    "timing_status": entry_status,
                     "check_in_at": now_utc_iso,
                     "check_in": time_str,
                     "check_out": None,
@@ -148,19 +183,29 @@ class AttendanceManager:
             self._notify_change()
             return {
                 "status": "checked_in",
+                "timing_status": entry_status,
+                "attendance_status": {
+                    "message": "Attendance marked successfully",
+                    "status": entry_status,
+                },
                 "employee_name": employee_name,
                 "date": date_str,
                 "check_in_at": now_utc_iso,
                 "check_in": time_str,
+                "message": "Attendance marked successfully",
                 "manual_entry": source == "manual",
             }
 
         # If employee is checked-in but not checked-out yet, mark checkout immediately
         if not record.get("check_out"):
+            exit_status = _exit_status_for_time(now_ist)
             self.attendance.update_one(
                 {"_id": record["_id"]},
                 {
                     "$set": {
+                        "status": exit_status,
+                        "exit_status": exit_status,
+                        "timing_status": exit_status,
                         "check_out": time_str,
                         "check_out_at": now_utc_iso,
                         "exit_mode": source,
@@ -173,10 +218,16 @@ class AttendanceManager:
 
             return {
                 "status": "checked_out",
+                "timing_status": exit_status,
+                "attendance_status": {
+                    "message": "Exit attendance marked successfully",
+                    "status": exit_status,
+                },
                 "employee_name": employee_name,
                 "date": date_str,
                 "check_out_at": now_utc_iso,
                 "check_out": time_str,
+                "message": "Exit attendance marked successfully",
                 "manual_entry": bool(record.get("manual_entry")) or source == "manual",
             }
 
@@ -184,6 +235,7 @@ class AttendanceManager:
         times = attendance_time_fields(record)
         return {
             "status": "already_recorded",
+            "timing_status": record.get("timing_status") or record.get("exit_status") or record.get("entry_status"),
             "employee_name": employee_name,
             "date": date_str,
             "message": "Attendance is already marked for today",
@@ -197,15 +249,24 @@ class AttendanceManager:
     def list_attendance(self, date: Optional[str] = None) -> list:
         query = {"date": date} if date else {}
         rows = list(self.attendance.find(query).sort([("date", -1), ("check_in", -1)]))
-        for row in rows:
-            row = normalize_attendance_row_times(row)
-            row["id"] = str(row.pop("_id"))
-            row["employee_id"] = str(row["employee_id"])
+        if not rows:
+            return []
+
+        normalized_rows = []
+        for raw_row in rows:
+            row = normalize_attendance_row_times(raw_row) or {}
+            if "_id" in row:
+                row["id"] = str(row.pop("_id"))
+            if row.get("employee_id") is not None:
+                row["employee_id"] = str(row["employee_id"])
             row["status"] = "checked_out" if row.get("check_out") else "checked_in"
+            row["timing_status"] = row.get("timing_status") or row.get("exit_status") or row.get("entry_status")
             row["manual_entry"] = bool(row.get("manual_entry"))
             row.pop("created_at", None)
             row.pop("updated_at", None)
-        return rows
+            normalized_rows.append(row)
+
+        return normalized_rows
 
     def list_employees(self) -> list:
         rows = list(self.employees.find().sort("name", 1))

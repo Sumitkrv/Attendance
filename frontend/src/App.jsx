@@ -118,8 +118,12 @@ function formatAttendanceTimeFromUtc(utcIso, fallback = '', dateHint = '') {
 }
 
 function normalizeAttendanceRow(row = {}) {
+  const timingStatusRaw = String(
+    row?.timing_status || row?.attendance_status?.status || row?.exit_status || row?.entry_status || '',
+  ).trim()
   return {
     ...row,
+    timing_status: timingStatusRaw,
     check_in: formatAttendanceTimeFromUtc(row?.check_in_at, row?.check_in, row?.date),
     check_out: formatAttendanceTimeFromUtc(row?.check_out_at, row?.check_out, row?.date),
   }
@@ -373,7 +377,7 @@ function AdminPage() {
       return
     }
 
-    const headers = ['Name', 'Check In', 'Check Out', 'Status', 'Mode']
+    const headers = ['Name', 'Check In', 'Check Out', 'Timing Status', 'Status', 'Mode']
     const escapeCsv = (value) => {
       const text = String(value ?? '')
       if (/[",\n]/.test(text)) {
@@ -388,6 +392,7 @@ function AdminPage() {
         a.employee_name || '',
         a.check_in || '',
         a.check_out || '',
+        String(a.timing_status || '').trim(),
         a.status || '',
         a.manual_entry ? 'manual' : 'auto',
       ].map(escapeCsv).join(',')),
@@ -460,7 +465,7 @@ function AdminPage() {
       const byStatus = logsStatusFilter === 'all' || String(a.status || '').toLowerCase() === logsStatusFilter
       if (!byStatus) return false
       if (!q) return true
-      return [a.employee_name, a.status, a.check_in, a.check_out].some((v) => String(v || '').toLowerCase().includes(q))
+      return [a.employee_name, a.status, a.check_in, a.check_out, a.timing_status].some((v) => String(v || '').toLowerCase().includes(q))
     })
 
     const parseTimeToMinutes = (value) => {
@@ -703,16 +708,19 @@ function AdminPage() {
     return (h * 60) + mm
   }
 
-  function getTimingFlags(row) {
-    // UI-only heuristic thresholds; no backend/business logic change
-    const OFFICE_START_MIN = 9 * 60 + 30
-    const OFFICE_END_MIN = 18 * 60
+  function resolveTimingStatus(row) {
+    const explicitStatus = String(row?.timing_status || row?.attendance_status?.status || '').trim()
+    if (explicitStatus) return explicitStatus
+
+    // Fallback for legacy rows that do not yet have server timing labels.
+    const ENTRY_ON_TIME_END = 11 * 60 + 30
+    const EXIT_ON_TIME_START = 18 * 60 + 30
     const inMinutes = parseTimeToMinutes(row?.check_in)
     const outMinutes = parseTimeToMinutes(row?.check_out)
-    return {
-      isLate: inMinutes != null ? inMinutes > OFFICE_START_MIN : null,
-      leftEarly: outMinutes != null ? outMinutes < OFFICE_END_MIN : null,
-    }
+
+    if (outMinutes != null) return outMinutes < EXIT_ON_TIME_START ? 'Left Early' : 'On Time Exit'
+    if (inMinutes != null) return inMinutes > ENTRY_ON_TIME_END ? 'Late' : 'On Time'
+    return ''
   }
 
   async function loadAll() {
@@ -1890,6 +1898,7 @@ function AdminPage() {
                         </span>
                       </button>
                     </th>
+                    <th>Timing</th>
                     <th>Status</th>
                     <th>Mode</th>
                   </tr>
@@ -1899,36 +1908,39 @@ function AdminPage() {
                     <tr
                       key={a.id}
                       className={(() => {
-                        const flags = getTimingFlags(a)
+                        const timingStatus = String(resolveTimingStatus(a) || '').toLowerCase()
                         const rawStatus = String(a.status || '').toLowerCase()
                         if (rawStatus === 'absent') return 'attendance-row-absent'
-                        if (flags.isLate === true) return 'attendance-row-late'
+                        if (timingStatus === 'late') return 'attendance-row-late'
+                        if (timingStatus === 'left early') return 'attendance-row-left-early'
                         return ''
                       })()}
                     >
                       <td>{a.employee_name}</td>
                       <td>
-                        {(() => {
-                          const flags = getTimingFlags(a)
-                          return (
-                            <div className="attendance-time-cell">
-                              <span>{a.check_in || '-'}</span>
-                              {flags.isLate === true && <span className="attendance-time-flag late">Late</span>}
-                              {flags.isLate == null && <span className="attendance-time-placeholder">—</span>}
-                            </div>
-                          )
-                        })()}
+                        <div className="attendance-time-cell">
+                          <span>{a.check_in || '-'}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="attendance-time-cell">
+                          <span>{a.check_out || '-'}</span>
+                        </div>
                       </td>
                       <td>
                         {(() => {
-                          const flags = getTimingFlags(a)
-                          return (
-                            <div className="attendance-time-cell">
-                              <span>{a.check_out || '-'}</span>
-                              {flags.leftEarly === true && <span className="attendance-time-flag early">Left Early</span>}
-                              {flags.leftEarly == null && <span className="attendance-time-placeholder">—</span>}
-                            </div>
-                          )
+                          const timingStatus = String(resolveTimingStatus(a) || '').trim()
+                          const timingKey = timingStatus.toLowerCase()
+                          const timingClass = timingKey === 'late'
+                            ? 'late'
+                            : timingKey === 'left early'
+                              ? 'left-early'
+                              : timingKey === 'on time exit'
+                                ? 'on-time-exit'
+                                : timingKey === 'on time'
+                                  ? 'on-time'
+                                  : 'default'
+                          return <span className={`attendance-timing-badge ${timingClass}`}>{timingStatus || '-'}</span>
                         })()}
                       </td>
                       <td>
@@ -1955,7 +1967,7 @@ function AdminPage() {
                   ))}
                   {!filteredAttendance.length && (
                     <tr>
-                      <td colSpan={5}>
+                      <td colSpan={6}>
                         <div className="logs-empty-state">
                           <p>No attendance records found</p>
                           <p className="muted small">Try selecting another date</p>
@@ -2964,7 +2976,10 @@ function UserPage() {
         checkOut: nextTimes.checkOut,
       })
 
-      const text = data.message || data.status || 'Attendance scanned'
+      // Show business timing label (On Time / Late / On Time Exit / Left Early) in UI feedback.
+      const timingStatus = String(data?.timing_status || data?.attendance_status?.status || '').trim()
+      const baseMessage = data.message || data.status || 'Attendance scanned'
+      const text = timingStatus ? `${baseMessage} - ${timingStatus}` : baseMessage
       setStatus(text)
       setMessage('Attendance processed')
       setError('')
@@ -2972,7 +2987,8 @@ function UserPage() {
       clearRetryAction()
       if (['checked_in', 'checked_out', 'already_recorded'].includes(String(data.status || ''))) {
         const title = data.status === 'already_recorded' ? 'Already Marked' : 'Attendance Marked'
-        showPopup('success', title, text)
+        const popupBody = timingStatus ? `Attendance marked - ${timingStatus}` : text
+        showPopup('success', title, popupBody)
         await refreshTodayAttendance(activeToken)
         stopCamera()
       }
