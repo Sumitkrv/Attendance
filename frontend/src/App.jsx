@@ -9,9 +9,9 @@ const UI_THEME_KEY = 'fa_ui_theme'
 const SESSION_REFRESH_CHECK_MS = 60 * 1000
 const SESSION_REFRESH_BEFORE_MS = 15 * 60 * 1000
 const SESSION_EXPIRING_SOON_MS = 5 * 60 * 1000
-const GEO_TIMEOUT_MS = 1800
+const GEO_TIMEOUT_MS = 10000
 const GEO_MAX_AGE_MS = 0
-const GEO_RETRY_COUNT = 0
+const GEO_RETRY_COUNT = 1
 const APP_TIME_ZONE = 'Asia/Kolkata'
 
 function readDarkModePreference() {
@@ -2779,23 +2779,33 @@ function UserPage() {
       throw new Error('Location is not supported in this browser.')
     }
 
+    const requestPosition = (options) => new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, options)
+    })
+
     let lastErr = null
     for (let i = 0; i <= GEO_RETRY_COUNT; i += 1) {
       try {
-        const pos = await new Promise((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(
-            resolve,
-            reject,
-            {
-              enableHighAccuracy: true,
-              timeout: GEO_TIMEOUT_MS,
-              maximumAge: 0,
-            },
-          )
+        const pos = await requestPosition({
+          enableHighAccuracy: true,
+          timeout: GEO_TIMEOUT_MS,
+          maximumAge: GEO_MAX_AGE_MS,
         })
         return pos
       } catch (err) {
         lastErr = err
+        if (Number(err?.code || 0) === 3) {
+          try {
+            const pos = await requestPosition({
+              enableHighAccuracy: false,
+              timeout: Math.max(12000, GEO_TIMEOUT_MS),
+              maximumAge: Math.max(60000, GEO_MAX_AGE_MS),
+            })
+            return pos
+          } catch (fallbackErr) {
+            lastErr = fallbackErr
+          }
+        }
         if (Number(err?.code || 0) === 1) break
       }
     }
