@@ -147,6 +147,32 @@ function formatWeekdayFromDateKey(dateKey = '') {
   }
 }
 
+function isWeekendDateKey(dateKey = '') {
+  const text = String(dateKey || '').trim()
+  const m = text.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!m) return false
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  const day = d.getDay()
+  return day === 0 || day === 6
+}
+
+function listDateKeysInRange(fromDate = '', toDate = '') {
+  const fromText = String(fromDate || '').trim()
+  const toText = String(toDate || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fromText) || !/^\d{4}-\d{2}-\d{2}$/.test(toText)) return []
+  if (fromText > toText) return []
+
+  const keys = []
+  let cursor = fromText
+  let guard = 0
+  while (cursor <= toText && guard < 400) {
+    keys.push(cursor)
+    cursor = dateKeyShift(cursor, 1)
+    guard += 1
+  }
+  return keys
+}
+
 function formatTimeInIST(value) {
   if (!value) return '-'
   try {
@@ -354,6 +380,8 @@ function AdminPage() {
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const [date, setDate] = useState(formatDateInput())
+  const [logsFromDate, setLogsFromDate] = useState(dateKeyOffsetFromToday(-6))
+  const [logsToDate, setLogsToDate] = useState(formatDateInput())
   const [employees, setEmployees] = useState([])
   const [attendance, setAttendance] = useState([])
   const [manualRequests, setManualRequests] = useState([])
@@ -883,7 +911,38 @@ function AdminPage() {
         {},
         token,
       )
-      const rows = Array.isArray(data?.rows) ? data.rows.map((row) => normalizeAttendanceRow(row)) : []
+      const apiRows = Array.isArray(data?.rows) ? data.rows.map((row) => normalizeAttendanceRow(row)) : []
+      const rowByDate = new Map(
+        apiRows
+          .map((row) => {
+            const key = String(row?.date || '').trim()
+            return [key, row]
+          })
+          .filter(([key]) => /^\d{4}-\d{2}-\d{2}$/.test(key)),
+      )
+
+      const allDates = listDateKeysInRange(fromDate, toDate)
+      const employeeName = String(data?.employee_name || employeeAttendanceModal.employeeName || 'Employee')
+      const rows = (allDates.length ? allDates : Array.from(rowByDate.keys()))
+        .map((dateKey) => {
+          const existing = rowByDate.get(dateKey)
+          if (existing) return existing
+          const weekend = isWeekendDateKey(dateKey)
+          return {
+            id: `virtual-${employeeId}-${dateKey}`,
+            employee_id: employeeId,
+            employee_name: employeeName,
+            date: dateKey,
+            check_in: '',
+            check_out: '',
+            manual_reason: '',
+            manual_entry: false,
+            timing_status: '',
+            status: weekend ? 'holiday' : 'absent',
+          }
+        })
+        .sort((a, b) => String(b?.date || '').localeCompare(String(a?.date || '')))
+
       setEmployeeAttendanceModal((old) => ({ ...old, rows, loading: false }))
     } catch (err) {
       setEmployeeAttendanceModal((old) => ({ ...old, loading: false, rows: [] }))
@@ -944,6 +1003,198 @@ function AdminPage() {
     setEmployeeAttendanceModal((old) => ({ ...old, fromDate, toDate }))
     if (!employeeId) return
     loadEmployeeAttendanceHistory(employeeId, fromDate, toDate)
+  }
+
+  function exportEmployeeAttendanceExcel() {
+    const rows = Array.isArray(employeeAttendanceModal.rows) ? employeeAttendanceModal.rows : []
+    if (!rows.length) {
+      setError('No attendance records to export for selected range')
+      return
+    }
+
+    const fromDate = String(employeeAttendanceModal.fromDate || '').trim() || dateKeyOffsetFromToday(-29)
+    const toDate = String(employeeAttendanceModal.toDate || '').trim() || formatDateInput()
+    const employeeName = String(employeeAttendanceModal.employeeName || 'employee')
+    const safeEmployeeName = employeeName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'employee'
+
+    const tableRows = rows.map((a) => {
+      const statusKey = attendanceStatusKey(a, a.date)
+      const timing = statusKey === 'holiday' ? '-' : String(resolveTimingStatus(a) || '-')
+      const worked = statusKey === 'holiday' ? '-' : formatWorkedHoursFromAttendanceRow(a)
+      const mode = statusKey === 'holiday' ? '-' : (a.manual_entry ? 'MANUAL' : 'AUTO')
+      return `
+        <tr>
+          <td>${escapeHtml(a.date || '-')}</td>
+          <td>${escapeHtml(formatWeekdayFromDateKey(a.date))}</td>
+          <td>${escapeHtml(a.check_in || '-')}</td>
+          <td>${escapeHtml(a.check_out || '-')}</td>
+          <td>${escapeHtml(worked)}</td>
+          <td>${escapeHtml(timing)}</td>
+          <td>${escapeHtml(attendanceStatusLabel(a, a.date))}</td>
+          <td>${escapeHtml(mode)}</td>
+          <td>${escapeHtml(a.manual_reason || '-')}</td>
+        </tr>
+      `
+    }).join('')
+
+    const workbookHtml = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; }
+    th, td { border: 1px solid #d1d5db; padding: 6px; text-align: left; }
+    th { background: #f3f4f6; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h3>${escapeHtml(employeeName)} · Attendance (${escapeHtml(fromDate)} to ${escapeHtml(toDate)})</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Day</th>
+        <th>In</th>
+        <th>Out</th>
+        <th>Total Hours</th>
+        <th>Timing</th>
+        <th>Status</th>
+        <th>Mode</th>
+        <th>Reason</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</body>
+</html>`
+
+    const blob = new Blob([workbookHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${safeEmployeeName}_attendance_${fromDate}_to_${toDate}.xls`
+    document.body.appendChild(anchor)
+    anchor.click()
+    document.body.removeChild(anchor)
+    URL.revokeObjectURL(url)
+    flash('Employee attendance Excel exported')
+  }
+
+  function printEmployeeAttendanceHistory() {
+    const rows = Array.isArray(employeeAttendanceModal.rows) ? employeeAttendanceModal.rows : []
+    if (!rows.length) {
+      setError('No attendance records to print for selected range')
+      return
+    }
+
+    const fromDate = String(employeeAttendanceModal.fromDate || '').trim() || dateKeyOffsetFromToday(-29)
+    const toDate = String(employeeAttendanceModal.toDate || '').trim() || formatDateInput()
+    const employeeName = String(employeeAttendanceModal.employeeName || 'Employee')
+    const generatedAt = new Intl.DateTimeFormat('en-IN', {
+      timeZone: APP_TIME_ZONE,
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date())
+
+    const summary = rows.reduce((acc, row) => {
+      const statusKey = attendanceStatusKey(row, row?.date)
+      acc.totalDays += 1
+      if (statusKey === 'holiday') acc.holidays += 1
+      else if (statusKey === 'leave_marked') acc.leaves += 1
+      else if (statusKey === 'absent') acc.absent += 1
+      else if (statusKey === 'checked_in' || statusKey === 'checked_out') acc.working += 1
+      return acc
+    }, {
+      totalDays: 0,
+      working: 0,
+      leaves: 0,
+      holidays: 0,
+      absent: 0,
+    })
+
+    const tableRowsHtml = rows.map((a) => {
+      const statusKey = attendanceStatusKey(a, a.date)
+      const timing = statusKey === 'holiday' ? '-' : String(resolveTimingStatus(a) || '-')
+      const worked = statusKey === 'holiday' ? '-' : formatWorkedHoursFromAttendanceRow(a)
+      const mode = statusKey === 'holiday' ? '-' : (a.manual_entry ? 'MANUAL' : 'AUTO')
+      return `
+        <tr>
+          <td>${escapeHtml(a.date || '-')}</td>
+          <td>${escapeHtml(formatWeekdayFromDateKey(a.date))}</td>
+          <td>${escapeHtml(a.check_in || '-')}</td>
+          <td>${escapeHtml(a.check_out || '-')}</td>
+          <td>${escapeHtml(worked)}</td>
+          <td>${escapeHtml(timing)}</td>
+          <td>${escapeHtml(attendanceStatusLabel(a, a.date))}</td>
+          <td>${escapeHtml(mode)}</td>
+          <td>${escapeHtml(a.manual_reason || '-')}</td>
+        </tr>
+      `
+    }).join('')
+
+    const reportHtml = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(employeeName)} Attendance</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; margin: 20px; color: #0f172a; }
+    .actions { display:flex; justify-content:flex-end; margin-bottom:10px; }
+    button { padding:8px 12px; border:none; border-radius:8px; background:#2563eb; color:#fff; font-weight:600; cursor:pointer; }
+    h1 { margin: 0; font-size: 20px; }
+    .muted { color:#64748b; font-size:12px; margin:4px 0 12px; }
+    .stats { display:grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap:8px; margin: 10px 0 12px; }
+    .stat { border:1px solid #e2e8f0; border-radius:10px; padding:8px 10px; }
+    .k { font-size:11px; color:#64748b; margin:0; }
+    .v { font-size:20px; font-weight:700; margin:2px 0 0; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { border:1px solid #e2e8f0; padding:7px; font-size:12px; text-align:left; }
+    th { background:#f8fafc; }
+    @media print { .actions { display:none; } body { margin: 0; } }
+  </style>
+</head>
+<body>
+  <div class="actions"><button onclick="window.print()">Print</button></div>
+  <h1>${escapeHtml(employeeName)} · Attendance</h1>
+  <p class="muted">Date range: ${escapeHtml(fromDate)} to ${escapeHtml(toDate)} · Generated on ${escapeHtml(generatedAt)}</p>
+  <div class="stats">
+    <div class="stat"><p class="k">Total Days</p><p class="v">${escapeHtml(summary.totalDays)}</p></div>
+    <div class="stat"><p class="k">Working Days</p><p class="v">${escapeHtml(summary.working)}</p></div>
+    <div class="stat"><p class="k">Leaves</p><p class="v">${escapeHtml(summary.leaves)}</p></div>
+    <div class="stat"><p class="k">Holidays</p><p class="v">${escapeHtml(summary.holidays)}</p></div>
+    <div class="stat"><p class="k">Absent Days</p><p class="v">${escapeHtml(summary.absent)}</p></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Day</th>
+        <th>In</th>
+        <th>Out</th>
+        <th>Total Hours</th>
+        <th>Timing</th>
+        <th>Status</th>
+        <th>Mode</th>
+        <th>Reason</th>
+      </tr>
+    </thead>
+    <tbody>${tableRowsHtml}</tbody>
+  </table>
+</body>
+</html>`
+
+    const printWindow = window.open('about:blank', '_blank', 'width=1200,height=900')
+    if (!printWindow) {
+      setError('Unable to open print preview. Please allow pop-ups for this site.')
+      return
+    }
+    printWindow.document.open()
+    printWindow.document.write(reportHtml)
+    printWindow.document.close()
+    printWindow.focus()
   }
 
   function closeEmployeeTasksModal() {
@@ -1518,6 +1769,121 @@ function AdminPage() {
     })
   }
 
+  function printEmployeeDirectoryPdf() {
+    const rows = Array.isArray(filteredEmployees) ? filteredEmployees : []
+    if (!rows.length) {
+      setError('No employees to print for selected filters')
+      return
+    }
+
+    const toEmployeeMeta = (employee = {}) => {
+      const statusText = String(employee.status || '').toLowerCase()
+      const isInactiveByStatus = statusText === 'inactive'
+      const hasIsActiveFlag = typeof employee.is_active === 'boolean'
+      const hasActiveFlag = typeof employee.active === 'boolean'
+      const isActive = hasIsActiveFlag ? !!employee.is_active : (hasActiveFlag ? !!employee.active : !isInactiveByStatus)
+      const mustChangePassword = !!employee.must_change_password
+      return {
+        isActive,
+        statusLabel: isActive ? 'Active' : 'Inactive',
+        passwordLabel: mustChangePassword ? 'Reset required' : 'Protected',
+      }
+    }
+
+    const generatedAt = new Intl.DateTimeFormat('en-IN', {
+      timeZone: APP_TIME_ZONE,
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date())
+
+    const summary = rows.reduce((acc, employee) => {
+      const meta = toEmployeeMeta(employee)
+      acc.total += 1
+      if (meta.isActive) acc.active += 1
+      else acc.inactive += 1
+      if (meta.passwordLabel === 'Reset required') acc.resetRequired += 1
+      return acc
+    }, { total: 0, active: 0, inactive: 0, resetRequired: 0 })
+
+    const tableRowsHtml = rows.map((employee) => {
+      const meta = toEmployeeMeta(employee)
+      return `
+        <tr>
+          <td>${escapeHtml(employee.name || '-')}</td>
+          <td>${escapeHtml(employee.login_id || '-')}</td>
+          <td>${escapeHtml(employee.department || 'General')}</td>
+          <td>${escapeHtml(meta.statusLabel)}</td>
+          <td>${escapeHtml(meta.passwordLabel)}</td>
+        </tr>
+      `
+    }).join('')
+
+    const reportHtml = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Employee Directory</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; margin: 24px; color: #0f172a; }
+    .top { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:14px; }
+    h1 { margin:0; font-size:20px; }
+    .muted { color:#64748b; font-size:12px; margin-top:4px; }
+    .stats { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:8px; margin: 10px 0 14px; }
+    .stat { border:1px solid #e2e8f0; border-radius:10px; padding:8px 10px; }
+    .k { font-size:11px; color:#64748b; margin:0; }
+    .v { font-size:20px; font-weight:700; margin:2px 0 0; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { border:1px solid #e2e8f0; padding:8px; font-size:12px; text-align:left; }
+    th { background:#f8fafc; }
+    .actions { display:flex; justify-content:flex-end; margin-bottom:10px; }
+    button { padding:8px 12px; border:none; border-radius:8px; background:#2563eb; color:#fff; font-weight:600; cursor:pointer; }
+    @media print { .actions { display:none; } body { margin: 0; } }
+  </style>
+</head>
+<body>
+  <div class="actions"><button onclick="window.print()">Print</button></div>
+  <div class="top">
+    <div>
+      <h1>Employee Directory</h1>
+      <p class="muted">Generated on ${escapeHtml(generatedAt)}</p>
+      <p class="muted">Department filter: ${escapeHtml(directoryDeptFilter === 'all' ? 'All' : directoryDeptFilter)} · Search: ${escapeHtml(directorySearch || '-')}</p>
+    </div>
+  </div>
+  <div class="stats">
+    <div class="stat"><p class="k">Total Employees</p><p class="v">${escapeHtml(summary.total)}</p></div>
+    <div class="stat"><p class="k">Active</p><p class="v">${escapeHtml(summary.active)}</p></div>
+    <div class="stat"><p class="k">Inactive</p><p class="v">${escapeHtml(summary.inactive)}</p></div>
+    <div class="stat"><p class="k">Reset Required</p><p class="v">${escapeHtml(summary.resetRequired)}</p></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Login ID</th>
+        <th>Department</th>
+        <th>Status</th>
+        <th>Password Status</th>
+      </tr>
+    </thead>
+    <tbody>${tableRowsHtml}</tbody>
+  </table>
+</body>
+</html>`
+
+    const printWindow = window.open('about:blank', '_blank', 'width=1200,height=900')
+    if (!printWindow) {
+      setError('Unable to open print preview. Please allow pop-ups for this site.')
+      return
+    }
+    printWindow.document.open()
+    printWindow.document.write(reportHtml)
+    printWindow.document.close()
+    printWindow.focus()
+  }
+
   function exportAttendanceCsv() {
     const rows = Array.isArray(filteredAttendance) ? filteredAttendance : []
     if (!rows.length) {
@@ -1542,7 +1908,7 @@ function AdminPage() {
         a.check_out || '',
         formatWorkedHoursFromAttendanceRow(a),
         String(a.timing_status || '').trim(),
-        a.status || '',
+        attendanceStatusLabel(a, date),
         a.manual_entry ? 'manual' : 'auto',
         a.manual_reason || '',
       ].map(escapeCsv).join(',')),
@@ -1655,8 +2021,8 @@ function AdminPage() {
         <td>${escapeHtml(a.check_in || '-')}</td>
         <td>${escapeHtml(a.check_out || '-')}</td>
         <td>${escapeHtml(formatWorkedHoursFromAttendanceRow(a))}</td>
-        <td>${escapeHtml(String(a.timing_status || '').trim() || '-')}</td>
-        <td>${escapeHtml(a.status || '-')}</td>
+        <td>${escapeHtml(attendanceStatusKey(a, reportDate) === 'holiday' ? '-' : (String(a.timing_status || '').trim() || '-'))}</td>
+        <td>${escapeHtml(attendanceStatusLabel(a, reportDate))}</td>
         <td>${escapeHtml(a.manual_entry ? 'manual' : 'auto')}</td>
         <td>${escapeHtml(a.manual_reason || '-')}</td>
       </tr>
@@ -1727,6 +2093,174 @@ function AdminPage() {
     printWindow.focus()
   }
 
+  async function exportAttendanceRangeExcel() {
+    try {
+      const { fromDate, toDate, rows } = await buildAttendanceRowsForDateRange(logsFromDate, logsToDate, token)
+      if (!rows.length) {
+        setError('No attendance logs found for selected date range')
+        return
+      }
+
+      const tableRows = rows.map((a) => {
+        const statusKey = attendanceStatusKey(a, a.date)
+        const timing = statusKey === 'holiday' ? '-' : (String(a.timing_status || '').trim() || '-')
+        const mode = statusKey === 'holiday' ? '-' : (a.manual_entry ? 'MANUAL' : 'AUTO')
+        const worked = statusKey === 'holiday' ? '-' : formatWorkedHoursFromAttendanceRow(a)
+        return `
+          <tr>
+            <td>${escapeHtml(a.date || '')}</td>
+            <td>${escapeHtml(a.weekday || formatWeekdayFromDateKey(a.date))}</td>
+            <td>${escapeHtml(a.employee_name || '')}</td>
+            <td>${escapeHtml(a.check_in || '-')}</td>
+            <td>${escapeHtml(a.check_out || '-')}</td>
+            <td>${escapeHtml(worked)}</td>
+            <td>${escapeHtml(timing)}</td>
+            <td>${escapeHtml(attendanceStatusLabel(a, a.date))}</td>
+            <td>${escapeHtml(mode)}</td>
+            <td>${escapeHtml(a.manual_reason || '-')}</td>
+          </tr>
+        `
+      }).join('')
+
+      const workbookHtml = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; }
+    th, td { border: 1px solid #d1d5db; padding: 6px; text-align: left; }
+    th { background: #f3f4f6; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h3>Attendance Logs (${escapeHtml(fromDate)} to ${escapeHtml(toDate)})</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Day</th>
+        <th>Name</th>
+        <th>In</th>
+        <th>Out</th>
+        <th>Total Hours</th>
+        <th>Timing</th>
+        <th>Status</th>
+        <th>Mode</th>
+        <th>Reason</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</body>
+</html>`
+
+      const blob = new Blob([workbookHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `attendance_logs_${fromDate}_to_${toDate}.xls`
+      document.body.appendChild(anchor)
+      anchor.click()
+      document.body.removeChild(anchor)
+      URL.revokeObjectURL(url)
+      flash('Attendance Excel exported')
+    } catch (err) {
+      setError(err.message || 'Unable to export attendance range')
+    }
+  }
+
+  async function printAttendanceRangePdf() {
+    try {
+      const { fromDate, toDate, rows } = await buildAttendanceRowsForDateRange(logsFromDate, logsToDate, token)
+      if (!rows.length) {
+        setError('No attendance logs to print for selected date range')
+        return
+      }
+
+      const generatedAt = new Intl.DateTimeFormat('en-IN', {
+        timeZone: APP_TIME_ZONE,
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date())
+
+      const tableRowsHtml = rows.map((a) => {
+        const statusKey = attendanceStatusKey(a, a.date)
+        const timing = statusKey === 'holiday' ? '-' : (String(a.timing_status || '').trim() || '-')
+        const worked = statusKey === 'holiday' ? '-' : formatWorkedHoursFromAttendanceRow(a)
+        return `
+          <tr>
+            <td>${escapeHtml(a.date || '')}</td>
+            <td>${escapeHtml(a.weekday || formatWeekdayFromDateKey(a.date))}</td>
+            <td>${escapeHtml(a.employee_name || '')}</td>
+            <td>${escapeHtml(a.check_in || '-')}</td>
+            <td>${escapeHtml(a.check_out || '-')}</td>
+            <td>${escapeHtml(worked)}</td>
+            <td>${escapeHtml(timing)}</td>
+            <td>${escapeHtml(attendanceStatusLabel(a, a.date))}</td>
+            <td>${escapeHtml(statusKey === 'holiday' ? '-' : (a.manual_entry ? 'MANUAL' : 'AUTO'))}</td>
+            <td>${escapeHtml(a.manual_reason || '-')}</td>
+          </tr>
+        `
+      }).join('')
+
+      const reportHtml = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Attendance Logs ${escapeHtml(fromDate)} to ${escapeHtml(toDate)}</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; margin: 20px; color: #0f172a; }
+    .actions { display:flex; justify-content:flex-end; margin-bottom:10px; }
+    button { padding:8px 12px; border:none; border-radius:8px; background:#2563eb; color:#fff; font-weight:600; cursor:pointer; }
+    h1 { margin:0; font-size:20px; }
+    .muted { color:#64748b; font-size:12px; margin:4px 0 12px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { border:1px solid #e2e8f0; padding:7px; font-size:12px; text-align:left; }
+    th { background:#f8fafc; }
+    @media print { .actions { display:none; } body { margin: 0; } }
+  </style>
+</head>
+<body>
+  <div class="actions"><button onclick="window.print()">Print</button></div>
+  <h1>Attendance Logs (${escapeHtml(fromDate)} to ${escapeHtml(toDate)})</h1>
+  <p class="muted">Generated on ${escapeHtml(generatedAt)}</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Day</th>
+        <th>Name</th>
+        <th>In</th>
+        <th>Out</th>
+        <th>Total Hours</th>
+        <th>Timing</th>
+        <th>Status</th>
+        <th>Mode</th>
+        <th>Reason</th>
+      </tr>
+    </thead>
+    <tbody>${tableRowsHtml}</tbody>
+  </table>
+</body>
+</html>`
+
+      const printWindow = window.open('about:blank', '_blank', 'width=1280,height=900')
+      if (!printWindow) {
+        setError('Unable to open print preview. Please allow pop-ups for this site.')
+        return
+      }
+      printWindow.document.open()
+      printWindow.document.write(reportHtml)
+      printWindow.document.close()
+      printWindow.focus()
+    } catch (err) {
+      setError(err.message || 'Unable to print attendance range')
+    }
+  }
+
   const visibleEmployeeIds = useMemo(() => filteredEmployees.map((e) => e.id), [filteredEmployees])
   const selectedVisibleCount = useMemo(
     () => visibleEmployeeIds.filter((id) => selectedEmployeeIds.includes(id)).length,
@@ -1778,10 +2312,10 @@ function AdminPage() {
   const filteredAttendance = useMemo(() => {
     const q = logsSearch.trim().toLowerCase()
     const filtered = (attendance || []).filter((a) => {
-      const byStatus = logsStatusFilter === 'all' || String(a.status || '').toLowerCase() === logsStatusFilter
+      const byStatus = logsStatusFilter === 'all' || attendanceStatusKey(a, date) === logsStatusFilter
       if (!byStatus) return false
       if (!q) return true
-      return [a.employee_name, a.status, a.check_in, a.check_out, a.timing_status, a.manual_reason].some((v) => String(v || '').toLowerCase().includes(q))
+      return [a.employee_name, attendanceStatusLabel(a, date), a.check_in, a.check_out, a.timing_status, a.manual_reason].some((v) => String(v || '').toLowerCase().includes(q))
     })
 
     const parseTimeToMinutes = (value) => {
@@ -2002,6 +2536,91 @@ function AdminPage() {
     if (outMinutes != null) return outMinutes < EXIT_ON_TIME_START ? 'Left Early' : 'On Time Exit'
     if (inMinutes != null) return inMinutes > ENTRY_ON_TIME_END ? 'Late' : 'On Time'
     return ''
+  }
+
+  function attendanceStatusKey(row, dateOverride = '') {
+    const dateKey = String(dateOverride || row?.date || date || '').trim()
+    if (isWeekendDateKey(dateKey)) return 'holiday'
+    const rawStatus = String(row?.status || '').trim().toLowerCase()
+    if (rawStatus === 'checked_in' || rawStatus === 'checked_out' || rawStatus === 'absent') return rawStatus
+    if (rawStatus === 'leave_marked' || rawStatus === 'leave' || rawStatus === 'on_leave') return 'leave_marked'
+    return rawStatus || 'unknown'
+  }
+
+  function attendanceStatusLabel(row, dateOverride = '') {
+    const statusKey = attendanceStatusKey(row, dateOverride)
+    if (statusKey === 'holiday') return 'HOLIDAY'
+    if (statusKey === 'leave_marked') return 'LEAVE'
+    if (!statusKey || statusKey === 'unknown') return '-'
+    return statusKey.replace(/_/g, ' ').toUpperCase()
+  }
+
+  function normalizeDateRangeInput(fromDateValue = '', toDateValue = '') {
+    const fromDate = String(fromDateValue || '').trim()
+    const toDate = String(toDateValue || '').trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
+      throw new Error('Select valid From and To dates')
+    }
+    if (fromDate > toDate) {
+      throw new Error('From date cannot be after To date')
+    }
+    return { fromDate, toDate }
+  }
+
+  async function buildAttendanceRowsForDateRange(fromDateValue, toDateValue, nextToken = token) {
+    const { fromDate, toDate } = normalizeDateRangeInput(fromDateValue, toDateValue)
+    if (!nextToken) throw new Error('Session expired. Please login again.')
+
+    const dateKeys = listDateKeysInRange(fromDate, toDate)
+    if (!dateKeys.length) return { fromDate, toDate, rows: [] }
+
+    const employeeDirectory = Array.isArray(employees) ? employees : []
+    const byDate = await Promise.all(dateKeys.map(async (dayKey) => {
+      const rawRows = await apiFetch(`/attendance?date=${encodeURIComponent(dayKey)}`, {}, nextToken)
+      const normalizedRows = Array.isArray(rawRows) ? rawRows.map((row) => normalizeAttendanceRow(row)) : []
+      return {
+        date: dayKey,
+        weekday: formatWeekdayFromDateKey(dayKey),
+        holiday: isWeekendDateKey(dayKey),
+        rows: normalizedRows,
+      }
+    }))
+
+    const flattened = []
+    byDate.forEach((dayPack) => {
+      const rows = Array.isArray(dayPack.rows) ? dayPack.rows : []
+      const byEmployeeName = new Map(rows.map((row) => [String(row?.employee_name || '').trim().toLowerCase(), row]))
+      if (dayPack.holiday && employeeDirectory.length) {
+        employeeDirectory.forEach((employee) => {
+          const employeeName = String(employee?.name || employee?.login_id || '').trim()
+          if (!employeeName) return
+          const existing = byEmployeeName.get(employeeName.toLowerCase())
+          flattened.push({
+            ...(existing || {}),
+            employee_name: employeeName,
+            date: dayPack.date,
+            weekday: dayPack.weekday,
+            is_holiday: true,
+          })
+        })
+        return
+      }
+
+      rows.forEach((row) => {
+        flattened.push({
+          ...row,
+          date: dayPack.date,
+          weekday: dayPack.weekday,
+          is_holiday: dayPack.holiday,
+        })
+      })
+    })
+
+    return {
+      fromDate,
+      toDate,
+      rows: flattened,
+    }
   }
 
   function hideAdminBellToast() {
@@ -2904,6 +3523,14 @@ function AdminPage() {
                   >
                     Delete Selected{selectedEmployeeIds.length ? ` (${selectedEmployeeIds.length})` : ''}
                   </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={printEmployeeDirectoryPdf}
+                    disabled={!filteredEmployees.length}
+                  >
+                    Print PDF
+                  </button>
                   <div className="table-search-wrap">
                     <span className="table-search-icon" aria-hidden="true">🔎</span>
                     <input
@@ -3069,11 +3696,33 @@ function AdminPage() {
                 <div className="row table-toolbar">
                   <button type="button" className="ghost" onClick={exportAttendanceCsv} disabled={!filteredAttendance.length}>Export CSV</button>
                   <button type="button" className="ghost" onClick={printAttendancePdf} disabled={!filteredAttendance.length}>Print PDF</button>
+                  <button type="button" className="ghost" onClick={exportAttendanceRangeExcel}>Export Excel (Range)</button>
+                  <button type="button" className="ghost" onClick={printAttendanceRangePdf}>Print Range</button>
                   <button type="button" className="ghost" onClick={openManualAttendanceModal}>Manual Entry</button>
+                  <label className="muted small" htmlFor="logs-from-date">From</label>
+                  <input
+                    id="logs-from-date"
+                    type="date"
+                    value={logsFromDate}
+                    onChange={(e) => setLogsFromDate(e.target.value)}
+                    aria-label="Select logs range start date"
+                  />
+                  <label className="muted small" htmlFor="logs-to-date">To</label>
+                  <input
+                    id="logs-to-date"
+                    type="date"
+                    value={logsToDate}
+                    onChange={(e) => setLogsToDate(e.target.value)}
+                    aria-label="Select logs range end date"
+                  />
                   <input
                     type="date"
                     value={date}
-                    onChange={(e) => setDate(e.target.value)}
+                    onChange={(e) => {
+                      const nextDate = e.target.value
+                      setDate(nextDate)
+                      setLogsToDate(nextDate)
+                    }}
                     aria-label="Select attendance date"
                   />
                   <input
@@ -3086,6 +3735,7 @@ function AdminPage() {
                     <option value="all">All Status</option>
                     <option value="checked_in">Checked In</option>
                     <option value="checked_out">Checked Out</option>
+                    <option value="holiday">Holiday</option>
                   </select>
                 </div>
               </div>
@@ -3147,7 +3797,8 @@ function AdminPage() {
                       key={a.id}
                       className={(() => {
                         const timingStatus = String(resolveTimingStatus(a) || '').toLowerCase()
-                        const rawStatus = String(a.status || '').toLowerCase()
+                        const rawStatus = attendanceStatusKey(a, date)
+                        if (rawStatus === 'holiday') return 'attendance-row-holiday'
                         if (rawStatus === 'absent') return 'attendance-row-absent'
                         if (timingStatus === 'late') return 'attendance-row-late'
                         if (timingStatus === 'left early') return 'attendance-row-left-early'
@@ -3184,15 +3835,17 @@ function AdminPage() {
                       </td>
                       <td>
                         {(() => {
-                          const rawStatus = String(a.status || '').toLowerCase()
+                          const rawStatus = attendanceStatusKey(a, date)
                           const statusClass = rawStatus === 'checked_in'
                             ? 'checked-in'
                             : rawStatus === 'checked_out'
                               ? 'checked-out'
                               : rawStatus === 'absent'
                                 ? 'absent'
+                                : rawStatus === 'holiday'
+                                  ? 'holiday'
                                 : 'default'
-                          const statusLabel = rawStatus ? rawStatus.replace(/_/g, ' ').toUpperCase() : '-'
+                          const statusLabel = attendanceStatusLabel(a, date)
                           return <span className={`attendance-log-badge ${statusClass}`}>{statusLabel}</span>
                         })()}
                       </td>
@@ -3980,6 +4633,12 @@ function AdminPage() {
               <button type="button" onClick={applyEmployeeAttendanceDateRange} disabled={employeeAttendanceModal.loading}>
                 {employeeAttendanceModal.loading ? 'Loading...' : 'Apply Filter'}
               </button>
+              <button type="button" className="ghost" onClick={exportEmployeeAttendanceExcel} disabled={employeeAttendanceModal.loading || !(employeeAttendanceModal.rows || []).length}>
+                Export Excel
+              </button>
+              <button type="button" className="ghost" onClick={printEmployeeAttendanceHistory} disabled={employeeAttendanceModal.loading || !(employeeAttendanceModal.rows || []).length}>
+                Print PDF
+              </button>
             </div>
             <div className="task-list-table-wrap five-row-scroll" style={{ marginTop: 8, flex: 1, minHeight: 0, overflowY: 'auto' }}>
               <table className="directory-table">
@@ -3999,15 +4658,25 @@ function AdminPage() {
                 <tbody>
                   {(employeeAttendanceModal.rows || []).map((a) => (
                     <tr key={`emp-att-${a.id || a.date}`}>
-                      <td>{a.date || '-'}</td>
-                      <td>{formatWeekdayFromDateKey(a.date)}</td>
-                      <td>{a.check_in || '-'}</td>
-                      <td>{a.check_out || '-'}</td>
-                      <td>{formatWorkedHoursFromAttendanceRow(a)}</td>
-                      <td>{String(resolveTimingStatus(a) || '-')}</td>
-                      <td>{String(a.status || '-').replace(/_/g, ' ')}</td>
-                      <td>{a.manual_entry ? 'MANUAL' : 'AUTO'}</td>
-                      <td>{a.manual_reason || '-'}</td>
+                      {(() => {
+                        const statusKey = attendanceStatusKey(a, a.date)
+                        const timing = statusKey === 'holiday' ? '-' : String(resolveTimingStatus(a) || '-')
+                        const worked = statusKey === 'holiday' ? '-' : formatWorkedHoursFromAttendanceRow(a)
+                        const mode = statusKey === 'holiday' ? '-' : (a.manual_entry ? 'MANUAL' : 'AUTO')
+                        return (
+                          <>
+                            <td>{a.date || '-'}</td>
+                            <td>{formatWeekdayFromDateKey(a.date)}</td>
+                            <td>{a.check_in || '-'}</td>
+                            <td>{a.check_out || '-'}</td>
+                            <td>{worked}</td>
+                            <td>{timing}</td>
+                            <td>{attendanceStatusLabel(a, a.date)}</td>
+                            <td>{mode}</td>
+                            <td>{a.manual_reason || '-'}</td>
+                          </>
+                        )
+                      })()}
                     </tr>
                   ))}
                   {!employeeAttendanceModal.loading && !(employeeAttendanceModal.rows || []).length && (
@@ -4366,6 +5035,7 @@ function UserPage() {
   const [status, setStatus] = useState('Ready')
   const [manualModalOpen, setManualModalOpen] = useState(false)
   const [manualSubmitting, setManualSubmitting] = useState(false)
+  const [leaveSubmitting, setLeaveSubmitting] = useState(false)
   const [manualCameraOn, setManualCameraOn] = useState(false)
   const [manualPhotoBlob, setManualPhotoBlob] = useState(null)
   const [manualPhotoPreview, setManualPhotoPreview] = useState('')
@@ -4647,17 +5317,12 @@ function UserPage() {
   async function login(values) {
     setError('')
     try {
-      const preLoginGeo = await updateLocation({ enforce: true })
       const data = await apiFetch('/user/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           login_id: values.login_id.toLowerCase(),
           password: values.password,
-          lat: preLoginGeo?.lat || '',
-          lng: preLoginGeo?.lng || '',
-          accuracy: preLoginGeo?.accuracy || '',
-          location_captured_at_ms: preLoginGeo?.capturedAtMs || '',
         }),
       })
 
@@ -4672,14 +5337,7 @@ function UserPage() {
       clearRetryAction()
     } catch (err) {
       const rawMessage = String(err?.message || '')
-      const isLocationBlock = /outside office|location|geofence|not allowed/i.test(rawMessage)
-      const finalMessage = isLocationBlock
-        ? `Not allowed to login: ${rawMessage || 'You are outside office geofence.'}`
-        : rawMessage
-      setError(finalMessage)
-      if (isLocationBlock) {
-        showPopup('error', 'Login blocked', finalMessage)
-      }
+      setError(rawMessage)
       localStorage.removeItem(USER_KEY)
       setToken('')
       setEmployee(null)
@@ -4705,10 +5363,30 @@ function UserPage() {
       setRetryLabel('')
       setStatus(punchAction === 'in' ? 'Marking punch in...' : 'Marking punch out...')
 
-      await updateLocation({ enforce: true })
+      let locationPayload = null
+      if (punchAction === 'in') {
+        const freshGeo = await updateLocation({ sessionToken: activeToken, enforce: true })
+        locationPayload = {
+          lat: freshGeo?.lat || '',
+          lng: freshGeo?.lng || '',
+          accuracy: freshGeo?.accuracy || '',
+          location_captured_at_ms: freshGeo?.capturedAtMs || '',
+          location_session_jti: freshGeo?.sessionJti || '',
+        }
+      }
 
       const endpoint = punchAction === 'in' ? '/user/mark_entry_on_login' : '/user/mark_exit_on_logout'
-      const data = await apiFetch(endpoint, { method: 'POST' }, activeToken)
+      const data = await apiFetch(
+        endpoint,
+        locationPayload
+          ? {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(locationPayload),
+            }
+          : { method: 'POST' },
+        activeToken,
+      )
       const nextStatus = String(data?.status || '').toLowerCase()
       const nextTimes = {
         checkIn: formatAttendanceTimeFromUtc(data?.check_in_at, data?.check_in || attendanceTimes.checkIn, data?.date),
@@ -4771,6 +5449,48 @@ function UserPage() {
     } catch {
       setRetryLabel('Retry attendance status')
       setRetryAction(() => () => refreshTodayAttendance(nextToken))
+    }
+  }
+
+  async function markLeaveForToday() {
+    const activeToken = readValidToken(USER_KEY, 'user', { allowExpired: true }) || token
+    if (!activeToken) {
+      setError('Please login first')
+      return
+    }
+
+    try {
+      setLeaveSubmitting(true)
+      setError('')
+      setRetryAction(null)
+      setRetryLabel('')
+      const data = await apiFetch('/user/mark_leave', { method: 'POST' }, activeToken)
+      const rawStatus = String(data?.status || '').toLowerCase()
+      const nextStatus = rawStatus === 'already_on_leave' ? 'leave_marked' : rawStatus
+
+      setAttendanceState(nextStatus)
+      setAttendanceTimes({ checkIn: '', checkOut: '' })
+      setAttendanceUtcTimes({ checkInAt: '', checkOutAt: '' })
+      writeAttendanceCache(activeToken, {
+        status: nextStatus,
+        checkIn: '',
+        checkOut: '',
+      })
+
+      const feedback = data?.message || (nextStatus === 'leave_marked' ? 'Leave marked successfully' : 'Leave updated')
+      setStatus(feedback)
+      setMessage(feedback)
+      showPopup('success', 'Leave Updated', feedback)
+      await refreshTodayAttendance(activeToken)
+    } catch (err) {
+      const text = String(err?.message || 'Unable to mark leave')
+      setError(text)
+      if (isRetryableError(err)) {
+        setRetryLabel('Retry leave mark')
+        setRetryAction(() => () => markLeaveForToday())
+      }
+    } finally {
+      setLeaveSubmitting(false)
     }
   }
 
@@ -5446,18 +6166,6 @@ function UserPage() {
       return
     }
     try {
-      const freshGeo = await updateLocation({ sessionToken: token, enforce: true })
-      await apiFetch('/user/validate_login_location', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          lat: freshGeo?.lat || '',
-          lng: freshGeo?.lng || '',
-          accuracy: freshGeo?.accuracy || '',
-          location_captured_at_ms: freshGeo?.capturedAtMs || '',
-          location_session_jti: freshGeo?.sessionJti || '',
-        }),
-      }, token)
       setEmployee({
         name: payload.employee_name,
         login_id: payload.login_id,
@@ -5467,7 +6175,7 @@ function UserPage() {
       await refreshTodayAttendance(token)
       await loadMyTasks(token)
     } catch (err) {
-      setError(err?.message || 'Location verification failed. Please login again.')
+      setError(err?.message || 'Session validation failed. Please login again.')
       logout(false)
     }
   }
@@ -6132,6 +6840,7 @@ function UserPage() {
   const attendanceStatus = String(attendanceState || '').toLowerCase()
   const canPunchIn = !['checked_in', 'checked_out', 'already_recorded', 'absent', 'leave_marked'].includes(attendanceStatus)
   const canPunchOut = attendanceStatus === 'checked_in'
+  const canMarkLeave = !['checked_in', 'checked_out', 'already_recorded', 'leave_marked'].includes(attendanceStatus)
   const geofenceDisabled = /location\s+verification\s+is\s+disabled\s+by\s+admin|geofence_disabled|geofence\s+is\s+disabled/i.test(`${status} ${error} ${message}`)
   const geofenceOutside = /outside\s+office\s+geofence|outside\s+geofence/i.test(`${status} ${error} ${message}`)
   const checkedInAtText = attendanceTimes.checkIn || '--'
@@ -6267,6 +6976,9 @@ function UserPage() {
               <h4>Quick Actions</h4>
               <button type="button" className="ghost" onClick={() => punchAttendance('in')} disabled={!canPunchIn}>Punch In</button>
               <button type="button" className="ghost" onClick={() => punchAttendance('out')} disabled={!canPunchOut}>Punch Out</button>
+              <button type="button" className="ghost" onClick={markLeaveForToday} disabled={!canMarkLeave || leaveSubmitting}>
+                {leaveSubmitting ? 'Marking Leave...' : 'Mark Leave'}
+              </button>
               <button type="button" className="ghost" onClick={openAttendanceHistoryModal}>Show History</button>
               <button type="button" className="ghost" onClick={() => openManualRequestModal('wfh')}>WFH Attendance Request</button>
               <button type="button" className="ghost" onClick={logout}>Logout</button>

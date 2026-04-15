@@ -589,7 +589,48 @@ class AttendanceManager:
                 "message": "Leave already marked for today",
             }
 
-        derived_status = "checked_out" if record.get("check_out") else "checked_in"
+        is_absent_record = bool(record.get("auto_absent")) or current_status == "absent"
+        has_attendance_times = bool(times.get("check_in")) or bool(times.get("check_out"))
+        if is_absent_record and not has_attendance_times:
+            self.attendance.update_one(
+                {"_id": record["_id"]},
+                {
+                    "$set": {
+                        "status": "Leave",
+                        "entry_status": None,
+                        "exit_status": None,
+                        "timing_status": "On Leave",
+                        "check_in": None,
+                        "check_in_at": None,
+                        "check_out": None,
+                        "check_out_at": None,
+                        "entry_mode": source,
+                        "exit_mode": None,
+                        "leave_marked": True,
+                        "auto_absent": False,
+                        "updated_at": now_utc,
+                    }
+                },
+            )
+            self._notify_change()
+            return {
+                "status": "leave_marked",
+                "timing_status": "On Leave",
+                "employee_name": employee_name,
+                "date": date_str,
+                "check_in": None,
+                "check_in_at": None,
+                "check_out": None,
+                "check_out_at": None,
+                "message": "Leave marked successfully",
+            }
+
+        if record.get("check_out"):
+            derived_status = "checked_out"
+        elif record.get("check_in"):
+            derived_status = "checked_in"
+        else:
+            derived_status = "absent"
         return {
             "status": "attendance_exists",
             "employee_name": employee_name,

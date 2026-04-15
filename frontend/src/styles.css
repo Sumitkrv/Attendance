@@ -538,6 +538,12 @@ tr:hover td {
   border-color: #fecaca;
 }
 
+.attendance-log-badge.holiday {
+  background: #fefce8;
+  color: #854d0e;
+  border-color: #fde68a;
+}
+
 .attendance-time-cell {
   display: grid;
   justify-items: center;
@@ -631,6 +637,14 @@ tr:hover td {
 
 .attendance-table tbody tr.attendance-row-absent:hover td {
   background: #fee2e2;
+}
+
+.attendance-table tbody tr.attendance-row-holiday td {
+  background: #fffbeb;
+}
+
+.attendance-table tbody tr.attendance-row-holiday:hover td {
+  background: #fef3c7;
 }
 
 .attendance-table th:first-child,

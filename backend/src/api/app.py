@@ -2437,24 +2437,6 @@ def user_login():
 
     must_change_password = bool(employee.get("must_change_password"))
 
-    location_payload = {}
-    for key in ("lat", "lng", "accuracy", "location_captured_at_ms"):
-        if payload.get(key) is not None:
-            location_payload[key] = payload.get(key)
-
-    location_check = _validate_scan_location({}, payload=location_payload, use_accuracy_grace=False)
-    if not location_check.get("ok", False):
-        response_payload = {
-            "success": False,
-            "status": location_check.get("status") or "location_error",
-            "message": location_check.get("message") or "Login not allowed from this location",
-        }
-        for key in ("distance_m", "allowed_radius_m", "effective_radius_m", "accuracy_m", "location_age_ms"):
-            if key in location_check:
-                response_payload[key] = location_check.get(key)
-        log_audit("user_login", status="failed", details={"login_id": login_id, "reason": response_payload.get("status")})
-        return jsonify(response_payload), int(location_check.get("code") or 403)
-
     log_audit(
         "user_login",
         target={"employee_id": str(employee.get("_id")), "login_id": login_id},
@@ -2669,6 +2651,29 @@ def user_mark_entry_on_login():
 
     if not employee_name:
         return jsonify({"status": "error", "message": "Invalid user token"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    location_payload = {}
+    for key in ("lat", "lng", "accuracy", "location_captured_at_ms", "location_session_jti"):
+        if payload.get(key) is not None:
+            location_payload[key] = payload.get(key)
+
+    location_check = _validate_scan_location(claims, payload=location_payload, use_accuracy_grace=False)
+    if not location_check.get("ok", False):
+        code = int(location_check.get("code") or 400)
+        response_payload = {
+            "status": location_check.get("status") or "location_error",
+            "message": location_check.get("message") or "Punch in not allowed from this location",
+        }
+        for key in ("distance_m", "allowed_radius_m", "effective_radius_m", "accuracy_m", "location_age_ms"):
+            if key in location_check:
+                response_payload[key] = location_check.get(key)
+        if "details" in location_check:
+            response_payload["details"] = location_check.get("details")
+        return jsonify(response_payload), code
 
     result = attendance_manager.mark_entry(employee_name, source="login")
     if result.get("status") == "error":
@@ -4395,10 +4400,20 @@ def _serialize_attendance_history_rows(rows, fallback_employee_name: str = ""):
         raw_status = str(normalized.get("status") or "").strip().lower()
         raw_timing = str(normalized.get("timing_status") or "").strip().lower()
         is_leave = bool(normalized.get("leave_marked")) or raw_status == "leave" or raw_timing == "on leave"
+        date_text = str(normalized.get("date") or "").strip()
+        is_weekend = False
+        try:
+            weekday = datetime.strptime(date_text, "%Y-%m-%d").weekday()
+            is_weekend = weekday >= 5
+        except Exception:
+            is_weekend = False
 
         if is_leave:
             normalized["status"] = "leave_marked"
             normalized["timing_status"] = "On Leave"
+        elif is_weekend and not normalized.get("check_in") and not normalized.get("check_out"):
+            normalized["status"] = "holiday"
+            normalized["timing_status"] = ""
         else:
             if normalized.get("check_out"):
                 normalized["status"] = "checked_out"
