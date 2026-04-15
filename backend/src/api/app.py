@@ -11,7 +11,7 @@ import time
 import json
 import logging
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from bson import json_util
 from bson.binary import Binary
@@ -44,6 +44,8 @@ from src.recognize_faces import FaceRecognizer
 from src.security import (
     admin_auth_required,
     build_password_hash,
+    decode_admin_token,
+    decode_user_token,
     get_token_policy,
     issue_admin_token,
     issue_user_token,
@@ -394,6 +396,7 @@ else:
 
 db = mongo_client[db_name]
 db.audit_logs.create_index([("created_at", -1)])
+db.tasks.create_index([("assigned_to", 1), ("status", 1), ("deadline", 1)])
 validate_enrollment_faces = str(os.getenv("VALIDATE_ENROLLMENT_FACES", "true")).lower() in {"1", "true", "yes", "on"}
 min_enrollment_images = int(os.getenv("MIN_ENROLLMENT_IMAGES", "3"))
 allow_credentials_only_enrollment = str(
@@ -404,7 +407,10 @@ allow_credentials_only_enrollment = str(
 ).lower() in {"1", "true", "yes", "on"}
 enable_office_geofence = str(os.getenv("ENABLE_OFFICE_GEOFENCE", "true")).lower() in {"1", "true", "yes", "on"}
 force_office_geofence = str(os.getenv("FORCE_OFFICE_GEOFENCE", "false")).lower() in {"1", "true", "yes", "on"}
-min_password_length = max(6, int(os.getenv("MIN_PASSWORD_LENGTH", "8")))
+try:
+    min_password_length = max(5, int(os.getenv("MIN_PASSWORD_LENGTH", "6")))
+except (TypeError, ValueError):
+    min_password_length = 6
 require_password_mix = str(os.getenv("REQUIRE_PASSWORD_MIX", "true")).lower() in {"1", "true", "yes", "on"}
 enable_debug_env_endpoint = str(
     os.getenv("ENABLE_DEBUG_ENV_ENDPOINT", "false" if APP_ENV in {"prod", "production"} else "true")
@@ -416,10 +422,13 @@ def _validate_password_policy(password: str, label: str = "Password") -> Optiona
     if len(text) < min_password_length:
         return f"{label} must be at least {min_password_length} characters"
 
+    has_digit = bool(re.search(r"\d", text))
+    if not has_digit:
+        return f"{label} must include at least one number"
+
     if require_password_mix:
         has_letter = bool(re.search(r"[A-Za-z]", text))
-        has_digit = bool(re.search(r"\d", text))
-        if not (has_letter and has_digit):
+        if not has_letter:
             return f"{label} must include both letters and numbers"
 
     return None
@@ -462,7 +471,7 @@ def _set_security_headers(response):
         response.headers["Access-Control-Allow-Origin"] = "https://attendance-frontend-virid-one.vercel.app"
 
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,Cache-Control,cache-control"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
     if not cors_allow_all:
         response.headers["Access-Control-Allow-Credentials"] = "true"
 
@@ -495,6 +504,16 @@ def _request_observability_context():
     g.request_start_ts = time.perf_counter()
     rid = request.headers.get("X-Request-ID", "").strip()
     g.request_id = rid if rid else uuid.uuid4().hex
+
+
+@app.route("/", methods=["OPTIONS"])
+def _cors_options_root():
+    return "", 204
+
+
+@app.route("/<path:_any>", methods=["OPTIONS"])
+def _cors_options_any(_any):
+    return "", 204
 
 
 @app.before_request
@@ -688,7 +707,11 @@ def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> flo
     return radius * c
 
 
-def _validate_scan_location(claims: Optional[dict] = None, payload: Optional[dict] = None):
+def _validate_scan_location(
+    claims: Optional[dict] = None,
+    payload: Optional[dict] = None,
+    use_accuracy_grace: bool = True,
+):
     payload = payload or {}
     geofence_active = bool(enable_office_geofence) or bool(force_office_geofence)
     if not geofence_active:
@@ -810,8 +833,11 @@ def _validate_scan_location(claims: Optional[dict] = None, payload: Optional[dic
     distance_m = _haversine_meters(lat, lng, office_lat, office_lng)
     allowed_radius_m = float(office_radius_meters or 500.0)
 
+    accuracy_raw = payload.get("accuracy")
+    if accuracy_raw in {None, ""}:
+        accuracy_raw = request.form.get("accuracy", "0")
     try:
-        accuracy = float(request.form.get("accuracy", "0") or 0)
+        accuracy = float(accuracy_raw or 0)
     except (TypeError, ValueError):
         accuracy = 0.0
 
@@ -825,9 +851,10 @@ def _validate_scan_location(claims: Optional[dict] = None, payload: Optional[dic
             "accuracy_m": round(accuracy, 2),
         }
 
-    # GPS can drift, especially indoors. Add an accuracy grace window.
-    # We cap grace to avoid very large spoof-friendly allowances.
-    effective_radius_m = allowed_radius_m + min(max(accuracy, 0.0), 200.0)
+    # GPS can drift, especially indoors. Add optional accuracy grace window.
+    # For login/session validation we keep strict radius checks.
+    accuracy_grace_m = min(max(accuracy, 0.0), 200.0) if use_accuracy_grace else 0.0
+    effective_radius_m = allowed_radius_m + accuracy_grace_m
 
     if distance_m > effective_radius_m:
         return {
@@ -837,7 +864,7 @@ def _validate_scan_location(claims: Optional[dict] = None, payload: Optional[dic
             "status": "outside_office",
             "message": (
                 f"Outside office location. Distance {round(distance_m, 1)}m, "
-                f"allowed {round(allowed_radius_m, 1)}m (+accuracy {round(min(max(accuracy, 0.0), 200.0), 1)}m)."
+                f"allowed {round(allowed_radius_m, 1)}m (+accuracy {round(accuracy_grace_m, 1)}m)."
             ),
             "distance_m": round(distance_m, 2),
             "allowed_radius_m": round(allowed_radius_m, 2),
@@ -866,6 +893,7 @@ def persist_mock_db_now():
             "attendance": list(db.attendance.find()),
             "settings": list(db.settings.find()),
             "manual_requests": list(db.manual_requests.find()),
+            "tasks": list(db.tasks.find()),
             "audit_logs": list(db.audit_logs.find().sort("created_at", -1).limit(1000)),
             "saved_at": datetime.now(),
         }
@@ -884,6 +912,7 @@ def load_mock_db_dump():
         db.attendance.delete_many({})
         db.settings.delete_many({})
         db.manual_requests.delete_many({})
+        db.tasks.delete_many({})
         db.audit_logs.delete_many({})
         if MOCK_DB_DUMP_PATH.exists():
             try:
@@ -900,12 +929,14 @@ def load_mock_db_dump():
         attendance = payload.get("attendance", [])
         settings = payload.get("settings", [])
         manual_requests = payload.get("manual_requests", [])
+        tasks = payload.get("tasks", [])
         audit_logs = payload.get("audit_logs", [])
 
         db.employees.delete_many({})
         db.attendance.delete_many({})
         db.settings.delete_many({})
         db.manual_requests.delete_many({})
+        db.tasks.delete_many({})
         db.audit_logs.delete_many({})
         if employees:
             db.employees.insert_many(employees)
@@ -915,6 +946,8 @@ def load_mock_db_dump():
             db.settings.insert_many(settings)
         if manual_requests:
             db.manual_requests.insert_many(manual_requests)
+        if tasks:
+            db.tasks.insert_many(tasks)
         if audit_logs:
             db.audit_logs.insert_many(audit_logs)
     except Exception:
@@ -968,6 +1001,74 @@ def _serialize_manual_request(row: dict) -> dict:
         if isinstance(value, datetime):
             item[key] = value.isoformat()
 
+    if "created_at" in item and "requested_at" not in item:
+        item["requested_at"] = item["created_at"]
+
+    return item
+
+
+TASK_STATUSES = {"not_started", "todo", "in_progress", "review", "completed", "approved", "overdue"}
+TASK_PRIORITIES = {"low", "medium", "high", "urgent"}
+
+
+def _normalize_task_status(value) -> str:
+    text = str(value or "").strip().lower().replace(" ", "_")
+    if text == "todo":
+        return "not_started"
+    if text in TASK_STATUSES:
+        return text
+    return "not_started"
+
+
+def _normalize_task_priority(value) -> str:
+    text = str(value or "").strip().lower()
+    if text in TASK_PRIORITIES:
+        return text
+    return "medium"
+
+
+def _parse_task_deadline(value) -> datetime:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("Task deadline is required")
+    try:
+        date_part = datetime.strptime(text[:10], "%Y-%m-%d")
+        return datetime(date_part.year, date_part.month, date_part.day, 23, 59, 59)
+    except ValueError as exc:
+        raise ValueError("Deadline must be in YYYY-MM-DD format") from exc
+
+
+def _parse_task_start_date(value) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        date_part = datetime.strptime(text[:10], "%Y-%m-%d")
+        return datetime(date_part.year, date_part.month, date_part.day, 0, 0, 0)
+    except ValueError as exc:
+        raise ValueError("Start date must be in YYYY-MM-DD format") from exc
+
+
+def _serialize_task(row: dict) -> dict:
+    item = dict(row or {})
+    if "_id" in item:
+        item["id"] = str(item.pop("_id"))
+    for key in ("created_at", "updated_at", "completed_at", "approved_at", "deadline", "start_date"):
+        value = item.get(key)
+        if isinstance(value, datetime):
+            item[key] = value.isoformat()
+    if not isinstance(item.get("checklist_items"), list):
+        item["checklist_items"] = []
+    if not isinstance(item.get("tags"), list):
+        item["tags"] = []
+    if not isinstance(item.get("attachments"), list):
+        item["attachments"] = []
+    if not isinstance(item.get("comments"), list):
+        item["comments"] = []
+    if not isinstance(item.get("activity"), list):
+        item["activity"] = []
+    item["status"] = _normalize_task_status(item.get("status"))
+    item["priority"] = _normalize_task_priority(item.get("priority"))
     return item
 
 
@@ -992,6 +1093,32 @@ def _to_optional_float(value):
     if isinstance(value, str) and value.strip() == "":
         return None
     return float(value)
+
+
+def _decode_any_bearer_claims() -> dict:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return {"role": "", "claims": None, "error": ("Missing bearer token", 401)}
+
+    token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        return {"role": "", "claims": None, "error": ("Invalid token", 401)}
+
+    try:
+        claims = decode_admin_token(token)
+        if claims.get("role") == "admin":
+            return {"role": "admin", "claims": claims, "error": None}
+    except Exception:
+        pass
+
+    try:
+        claims = decode_user_token(token)
+        if claims.get("role") == "user":
+            return {"role": "user", "claims": claims, "error": None}
+    except Exception:
+        pass
+
+    return {"role": "", "claims": None, "error": ("Invalid token", 401)}
 
 
 def _current_geofence_settings() -> dict:
@@ -2309,6 +2436,25 @@ def user_login():
         return jsonify({"success": False, "message": "Invalid credentials"}), 401
 
     must_change_password = bool(employee.get("must_change_password"))
+
+    location_payload = {}
+    for key in ("lat", "lng", "accuracy", "location_captured_at_ms"):
+        if payload.get(key) is not None:
+            location_payload[key] = payload.get(key)
+
+    location_check = _validate_scan_location({}, payload=location_payload, use_accuracy_grace=False)
+    if not location_check.get("ok", False):
+        response_payload = {
+            "success": False,
+            "status": location_check.get("status") or "location_error",
+            "message": location_check.get("message") or "Login not allowed from this location",
+        }
+        for key in ("distance_m", "allowed_radius_m", "effective_radius_m", "accuracy_m", "location_age_ms"):
+            if key in location_check:
+                response_payload[key] = location_check.get(key)
+        log_audit("user_login", status="failed", details={"login_id": login_id, "reason": response_payload.get("status")})
+        return jsonify(response_payload), int(location_check.get("code") or 403)
+
     log_audit(
         "user_login",
         target={"employee_id": str(employee.get("_id")), "login_id": login_id},
@@ -2332,6 +2478,51 @@ def user_login():
             },
         }
     )
+
+
+@app.post("/user/validate_login_location")
+@user_auth_required
+@limiter.limit("240 per hour")
+def user_validate_login_location():
+    claims = getattr(g, "user_claims", {}) or {}
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    location_payload = {}
+    for key in ("lat", "lng", "accuracy", "location_captured_at_ms", "location_session_jti"):
+        if payload.get(key) is not None:
+            location_payload[key] = payload.get(key)
+
+    location_check = _validate_scan_location(claims, payload=location_payload, use_accuracy_grace=False)
+    if not location_check.get("ok", False):
+        code = int(location_check.get("code") or 400)
+        response_payload = {
+            "allowed": False,
+            "status": location_check.get("status") or "location_error",
+            "message": location_check.get("message") or "Login not allowed from this location",
+        }
+        for key in ("distance_m", "allowed_radius_m", "effective_radius_m", "accuracy_m", "location_age_ms"):
+            if key in location_check:
+                response_payload[key] = location_check.get(key)
+        if "details" in location_check:
+            response_payload["details"] = location_check.get("details")
+        return jsonify(response_payload), code
+
+    response_payload = {
+        "allowed": True,
+        "status": location_check.get("status") or "ok",
+        "message": "Login location verified",
+    }
+    if location_check.get("enabled"):
+        response_payload["location"] = {
+            "distance_m": location_check.get("distance_m"),
+            "allowed_radius_m": location_check.get("allowed_radius_m"),
+            "effective_radius_m": location_check.get("effective_radius_m"),
+            "accuracy_m": location_check.get("accuracy_m"),
+            "location_age_ms": location_check.get("location_age_ms"),
+        }
+    return jsonify(response_payload)
 
 
 @app.post("/auth/refresh_user")
@@ -2435,6 +2626,7 @@ def user_attendance_today():
         return jsonify({"message": "Invalid user token"}), 401
 
     date_str = ist_now().strftime("%Y-%m-%d")
+    attendance_manager.auto_mark_absent_for_date(date_str)
     row = db.attendance.find_one({"employee_id": oid, "date": date_str})
 
     if not row:
@@ -2444,19 +2636,130 @@ def user_attendance_today():
             "checked_in": False,
             "check_in": None,
             "check_out": None,
+            "timing_status": None,
         })
 
     row = normalize_attendance_row_times(row)
-    status = "checked_out" if row.get("check_out") else "checked_in"
+    raw_status = str(row.get("status") or "").strip().lower()
+    raw_timing_status = str(row.get("timing_status") or "").strip().lower()
+    is_leave = bool(row.get("leave_marked")) or raw_status == "leave" or raw_timing_status == "on leave"
+    is_absent = bool(row.get("auto_absent")) or raw_status == "absent"
+    status = "leave_marked" if is_leave else ("absent" if is_absent else ("checked_out" if row.get("check_out") else "checked_in"))
     return jsonify({
         "status": status,
         "date": row.get("date") or date_str,
-        "checked_in": True,
+        "checked_in": (not is_leave) and (not is_absent),
         "check_in": row.get("check_in"),
         "check_out": row.get("check_out"),
         "check_in_at": row.get("check_in_at"),
         "check_out_at": row.get("check_out_at"),
+        "timing_status": "On Leave" if is_leave else ("Absent" if is_absent else (row.get("timing_status") or row.get("exit_status") or row.get("entry_status"))),
     })
+
+
+@app.post("/user/mark_entry_on_login")
+@user_auth_required
+@limiter.limit("120 per hour")
+def user_mark_entry_on_login():
+    claims = getattr(g, "user_claims", {}) or {}
+    employee_id = str(claims.get("employee_id") or "").strip()
+    employee_name = _get_cached_employee_name(employee_id) if employee_id else ""
+    if not employee_name:
+        employee_name = str(claims.get("employee_name") or "").strip()
+
+    if not employee_name:
+        return jsonify({"status": "error", "message": "Invalid user token"}), 401
+
+    result = attendance_manager.mark_entry(employee_name, source="login")
+    if result.get("status") == "error":
+        return jsonify(result), 400
+
+    today_str = ist_now().strftime("%Y-%m-%d")
+    employee_tasks = list(db.tasks.find({"assigned_to": employee_id}).sort("deadline", 1))
+    today_tasks = []
+    for row in employee_tasks:
+        serialized = _serialize_task(row)
+        deadline_text = str(serialized.get("deadline") or "")[:10]
+        if deadline_text == today_str:
+            today_tasks.append(serialized)
+    result["today_tasks"] = today_tasks
+
+    code = 200
+    if result.get("status") == "checked_in":
+        log_audit("user_login_entry_marked", target={"employee_id": employee_id, "login_id": claims.get("login_id")})
+
+    return jsonify(result), code
+
+
+@app.post("/user/mark_exit_on_logout")
+@user_auth_required
+@limiter.limit("120 per hour")
+def user_mark_exit_on_logout():
+    claims = getattr(g, "user_claims", {}) or {}
+    employee_id = str(claims.get("employee_id") or "").strip()
+    employee_name = _get_cached_employee_name(employee_id) if employee_id else ""
+    if not employee_name:
+        employee_name = str(claims.get("employee_name") or "").strip()
+
+    if not employee_name:
+        return jsonify({"status": "error", "message": "Invalid user token"}), 401
+
+    result = attendance_manager.mark_exit(employee_name, source="logout")
+    if result.get("status") == "error":
+        return jsonify(result), 400
+
+    today_str = ist_now().strftime("%Y-%m-%d")
+    employee_tasks = [_serialize_task(row) for row in db.tasks.find({"assigned_to": employee_id})]
+    completed_today = [
+        t for t in employee_tasks
+        if str(t.get("status") or "") in {"completed", "approved"} and str(t.get("completed_at") or t.get("approved_at") or "")[:10] == today_str
+    ]
+    pending_tasks = [t for t in employee_tasks if str(t.get("status") or "") not in {"completed", "approved"}]
+
+    hours_worked = 0.0
+    try:
+        check_in_at = datetime.fromisoformat(str(result.get("check_in_at") or "").replace("Z", "+00:00"))
+        check_out_at = datetime.fromisoformat(str(result.get("check_out_at") or "").replace("Z", "+00:00"))
+        delta = check_out_at - check_in_at
+        hours_worked = round(max(0.0, delta.total_seconds() / 3600.0), 2)
+    except Exception:
+        hours_worked = 0.0
+
+    result["productivity"] = {
+        "tasks_completed_today": len(completed_today),
+        "pending_tasks": len(pending_tasks),
+        "hours_worked": hours_worked,
+    }
+
+    if result.get("status") == "checked_out":
+        log_audit("user_logout_exit_marked", target={"employee_id": employee_id, "login_id": claims.get("login_id")})
+
+    return jsonify(result), 200
+
+
+@app.post("/user/mark_leave")
+@user_auth_required
+@limiter.limit("60 per hour")
+def user_mark_leave():
+    claims = getattr(g, "user_claims", {}) or {}
+    employee_id = str(claims.get("employee_id") or "").strip()
+    employee_name = _get_cached_employee_name(employee_id) if employee_id else ""
+    if not employee_name:
+        employee_name = str(claims.get("employee_name") or "").strip()
+
+    if not employee_name:
+        return jsonify({"status": "error", "message": "Invalid user token"}), 401
+
+    result = attendance_manager.mark_leave(employee_name, source="employee_panel")
+    if result.get("status") == "error":
+        return jsonify(result), 400
+    if result.get("status") == "attendance_exists":
+        return jsonify(result), 409
+
+    if result.get("status") == "leave_marked":
+        log_audit("user_leave_marked", target={"employee_id": employee_id, "login_id": claims.get("login_id")})
+
+    return jsonify(result), 200
 
 
 @app.post("/register_employee")
@@ -3104,22 +3407,23 @@ def manual_attendance_request():
         except (TypeError, ValueError):
             return jsonify({"message": f"Invalid location field: {key}"}), 400
 
+    image_path = ""
     image_file = request.files.get("image")
-    if not image_file or not image_file.filename:
+    if image_file and image_file.filename:
+        raw = image_file.read()
+        if not raw:
+            return jsonify({"message": "Uploaded image is empty"}), 400
+        arr = np.frombuffer(raw, np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return jsonify({"message": "Invalid image format"}), 400
+
+        image_name = f"manual_{uuid.uuid4().hex}.jpg"
+        target = MANUAL_REQUESTS_IMAGE_DIR / image_name
+        cv2.imwrite(str(target), frame)
+        image_path = str(target)
+    elif request_type != "wfh":
         return jsonify({"message": "Camera image is required for manual request"}), 400
-
-    raw = image_file.read()
-    if not raw:
-        return jsonify({"message": "Uploaded image is empty"}), 400
-    arr = np.frombuffer(raw, np.uint8)
-    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if frame is None:
-        return jsonify({"message": "Invalid image format"}), 400
-
-    image_name = f"manual_{uuid.uuid4().hex}.jpg"
-    target = MANUAL_REQUESTS_IMAGE_DIR / image_name
-    cv2.imwrite(str(target), frame)
-    image_path = str(target)
 
     now = ist_now()
     doc = {
@@ -3170,6 +3474,11 @@ def approve_manual_request(request_id):
         return jsonify({"message": "Only pending requests can be approved"}), 409
 
     attendance_result = attendance_manager.mark_attendance(row.get("employee_name", ""), source="manual")
+            attendance_result = attendance_manager.mark_attendance(
+                row.get("employee_name", ""),
+                source="manual",
+                reference_at=row.get("created_at") or row.get("requested_at"),
+            )
     if attendance_result.get("status") == "error":
         return jsonify({"message": attendance_result.get("message", "Unable to mark attendance")}), 400
 
@@ -3249,6 +3558,634 @@ def reject_manual_request(request_id):
     persist_mock_db_now()
     updated = db.manual_requests.find_one({"_id": oid})
     return jsonify({"message": "Manual request rejected", "request": _serialize_manual_request(updated)})
+
+
+@app.post("/tasks")
+@admin_auth_required
+@limiter.limit("240 per hour")
+def create_task():
+    payload = request.get_json(silent=True) or {}
+
+    title = str(payload.get("title") or "").strip()
+    description = str(payload.get("description") or "").strip()
+    assigned_to = str(payload.get("assigned_to") or "").strip()
+    assigned_by = str(payload.get("assigned_by") or getattr(g, "admin_claims", {}).get("sub") or "admin").strip()
+    priority = _normalize_task_priority(payload.get("priority"))
+    status = _normalize_task_status(payload.get("status"))
+    checklist_items = payload.get("checklist_items") or []
+    if not isinstance(checklist_items, list):
+        checklist_items = []
+    normalized_checklist = []
+    for item in checklist_items:
+        if isinstance(item, dict):
+            title_text = str(item.get("title") or "").strip()
+            done_flag = bool(item.get("done"))
+        else:
+            title_text = str(item or "").strip()
+            done_flag = False
+        if title_text:
+            normalized_checklist.append({"title": title_text, "done": done_flag})
+
+    tags = payload.get("tags") or []
+    if not isinstance(tags, list):
+        tags = []
+    tags = [str(t).strip() for t in tags if str(t).strip()]
+
+    attachments = payload.get("attachments") or []
+    if not isinstance(attachments, list):
+        attachments = []
+
+    department_tag = str(payload.get("department_tag") or "").strip() or "General"
+    shift_tag = str(payload.get("shift_tag") or "").strip().lower() or "day"
+    due_time = str(payload.get("due_time") or "").strip()
+    start_date_raw = str(payload.get("start_date") or "").strip()
+    estimated_hours = payload.get("estimated_hours")
+    recurring = bool(payload.get("recurring"))
+
+    try:
+        estimated_hours = float(estimated_hours) if estimated_hours not in (None, "") else None
+    except (TypeError, ValueError):
+        estimated_hours = None
+
+    if not title:
+        return jsonify({"message": "Task title is required"}), 400
+    if not description:
+        return jsonify({"message": "Task description is required"}), 400
+    if not assigned_to:
+        return jsonify({"message": "assigned_to is required"}), 400
+    if not due_time:
+        return jsonify({"message": "Task due time is required"}), 400
+
+    try:
+        deadline = _parse_task_deadline(payload.get("deadline"))
+    except ValueError as exc:
+        return jsonify({"message": str(exc)}), 400
+
+    try:
+        start_date = _parse_task_start_date(start_date_raw)
+    except ValueError as exc:
+        return jsonify({"message": str(exc)}), 400
+
+    if start_date and start_date.date() > deadline.date():
+        return jsonify({"message": "Start date cannot be after deadline"}), 400
+
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        assignee_oid = ObjectId(assigned_to)
+    except InvalidId:
+        return jsonify({"message": "Invalid assigned_to employee id"}), 400
+
+    employee = db.employees.find_one({"_id": assignee_oid})
+    if not employee:
+        return jsonify({"message": "Assigned employee not found"}), 404
+
+    now = datetime.now()
+    doc = {
+        "title": title,
+        "description": description,
+        "assigned_to": assigned_to,
+        "assigned_to_name": employee.get("name", ""),
+        "assigned_to_department": employee.get("department", "General"),
+        "assigned_by": assigned_by,
+        "start_date": start_date,
+        "deadline": deadline,
+        "priority": priority,
+        "status": status,
+        "due_time": due_time,
+        "department_tag": department_tag,
+        "shift_tag": shift_tag,
+        "estimated_hours": estimated_hours,
+        "recurring": recurring,
+        "checklist_items": normalized_checklist,
+        "tags": tags,
+        "attachments": attachments,
+        "comments": [],
+        "activity": [
+            {
+                "type": "created",
+                "by": assigned_by,
+                "at": now,
+                "text": "Task created",
+            }
+        ],
+        "comment": "",
+        "created_at": now,
+        "updated_at": now,
+        "completed_at": now if status == "completed" else None,
+    }
+    created = db.tasks.insert_one(doc)
+    persist_mock_db_now()
+    saved = db.tasks.find_one({"_id": created.inserted_id})
+    log_audit("task_created", target={"assigned_to": assigned_to, "title": title})
+    return jsonify({"message": "Task assigned", "task": _serialize_task(saved)}), 201
+
+
+@app.post("/user/tasks")
+@user_auth_required
+@limiter.limit("120 per hour")
+def create_user_task():
+    payload = request.get_json(silent=True) or {}
+    claims = getattr(g, "user_claims", {}) or {}
+
+    employee_id = str(claims.get("employee_id") or "").strip()
+    employee_name = str(claims.get("employee_name") or "").strip()
+    login_id = str(claims.get("login_id") or "").strip()
+    if not employee_id:
+        return jsonify({"message": "Invalid user token"}), 401
+
+    title = str(payload.get("title") or "").strip()
+    description = str(payload.get("description") or "").strip()
+    priority = _normalize_task_priority(payload.get("priority"))
+    status = _normalize_task_status(payload.get("status") or "not_started")
+    checklist_items = payload.get("checklist_items") or []
+    if not isinstance(checklist_items, list):
+        checklist_items = []
+    normalized_checklist = []
+    for item in checklist_items:
+        if isinstance(item, dict):
+            title_text = str(item.get("title") or "").strip()
+            done_flag = bool(item.get("done"))
+        else:
+            title_text = str(item or "").strip()
+            done_flag = False
+        if title_text:
+            normalized_checklist.append({"title": title_text, "done": done_flag})
+
+    if not title:
+        return jsonify({"message": "Task title is required"}), 400
+    if not description:
+        return jsonify({"message": "Task description is required"}), 400
+    if not str(payload.get("due_time") or "").strip():
+        return jsonify({"message": "Task due time is required"}), 400
+
+    try:
+        deadline = _parse_task_deadline(payload.get("deadline"))
+    except ValueError as exc:
+        return jsonify({"message": str(exc)}), 400
+
+    employee = db.employees.find_one({"login_id": login_id}) if login_id else None
+    department = (employee or {}).get("department", "General")
+
+    now = datetime.now()
+    doc = {
+        "title": title,
+        "description": description,
+        "assigned_to": employee_id,
+        "assigned_to_name": employee_name,
+        "assigned_to_department": department,
+        "assigned_by": employee_name or login_id or "employee",
+        "deadline": deadline,
+        "priority": priority,
+        "status": status,
+        "due_time": str(payload.get("due_time") or "").strip(),
+        "department_tag": str(payload.get("department_tag") or department or "General").strip() or "General",
+        "shift_tag": str(payload.get("shift_tag") or "day").strip().lower() or "day",
+        "estimated_hours": None,
+        "recurring": bool(payload.get("recurring")),
+        "checklist_items": normalized_checklist,
+        "tags": ["employee-created"],
+        "attachments": [],
+        "comments": [],
+        "activity": [
+            {
+                "type": "created",
+                "by": employee_name or login_id or "employee",
+                "at": now,
+                "text": f"Task created by employee (checklist: {len(normalized_checklist)})",
+            }
+        ],
+        "comment": "",
+        "created_at": now,
+        "updated_at": now,
+        "completed_at": now if status == "completed" else None,
+    }
+    created = db.tasks.insert_one(doc)
+    persist_mock_db_now()
+    saved = db.tasks.find_one({"_id": created.inserted_id})
+    log_audit("task_created_by_employee", target={"assigned_to": employee_id, "title": title})
+    return jsonify({"message": "Task created", "task": _serialize_task(saved)}), 201
+
+
+def _task_query_from_param(task_id: str):
+    token = str(task_id or "").strip()
+    if not token:
+        return None
+    candidates = [{"_id": token}, {"id": token}]
+    try:
+        from bson import ObjectId
+        candidates.insert(0, {"_id": ObjectId(token)})
+    except Exception:
+        pass
+    return {"$or": candidates}
+
+
+def _task_access_allowed_for_user(task: dict, claims: dict) -> bool:
+    if not isinstance(task, dict):
+        return False
+
+    assigned_to = str(task.get("assigned_to") or "").strip()
+    employee_id = str((claims or {}).get("employee_id") or "").strip()
+    login_id = str((claims or {}).get("login_id") or "").strip().lower()
+    employee_name = str((claims or {}).get("employee_name") or "").strip().lower()
+
+    if employee_id and assigned_to == employee_id:
+        return True
+    if assigned_to and login_id and assigned_to.lower() == login_id:
+        return True
+
+    assigned_name = str(task.get("assigned_to_name") or "").strip().lower()
+    if assigned_name and employee_name and assigned_name == employee_name:
+        return True
+
+    tags = [str(x or "").strip().lower() for x in (task.get("tags") or []) if str(x or "").strip()]
+    assigned_by = str(task.get("assigned_by") or "").strip().lower()
+    if "employee-created" in tags and ((login_id and assigned_by == login_id) or (employee_name and assigned_by == employee_name)):
+        return True
+
+    return False
+
+
+@app.get("/tasks")
+def list_tasks():
+    auth = _decode_any_bearer_claims()
+    if auth.get("error"):
+        message, code = auth["error"]
+        return jsonify({"message": message}), code
+
+    query = {}
+    if auth.get("role") == "admin":
+        query = {}
+    elif auth.get("role") == "user":
+        query = {"assigned_to": str((auth.get("claims") or {}).get("employee_id") or "")}
+    else:
+        return jsonify({"message": "Missing bearer token"}), 401
+
+    rows = list(db.tasks.find(query).sort("deadline", 1))
+    return jsonify([_serialize_task(row) for row in rows])
+
+
+@app.get("/tasks/<employee_id>")
+@admin_auth_required
+def list_tasks_by_employee(employee_id):
+    rows = list(db.tasks.find({"assigned_to": str(employee_id)}).sort("deadline", 1))
+    return jsonify([_serialize_task(row) for row in rows])
+
+
+@app.patch("/tasks/<task_id>/status")
+@user_auth_required
+@limiter.limit("240 per hour")
+def update_task_status(task_id):
+    payload = request.get_json(silent=True) or {}
+    has_status = "status" in payload
+    has_comment = "comment" in payload
+    next_status = _normalize_task_status(payload.get("status")) if has_status else ""
+    comment = str(payload.get("comment") or "").strip() if has_comment else ""
+    checklist_index_raw = payload.get("checklist_index")
+    checklist_done_raw = payload.get("checklist_done")
+
+    task_query = _task_query_from_param(task_id)
+    if not task_query:
+        return jsonify({"message": "Invalid task id"}), 400
+
+    claims = getattr(g, "user_claims", {}) or {}
+    task = db.tasks.find_one(task_query)
+    if not task:
+        return jsonify({"message": "Task not found"}), 404
+
+    if not _task_access_allowed_for_user(task, claims):
+        return jsonify({"message": "Not allowed to update this task"}), 403
+    if has_status and next_status == "approved":
+        return jsonify({"message": "Only admin can approve tasks"}), 403
+
+    now = datetime.now()
+    final_status = _normalize_task_status(task.get("status"))
+    if has_status:
+        final_status = next_status
+    final_comment = str(task.get("comment") or "")
+    if has_comment:
+        final_comment = comment
+
+    update_doc = {
+        "status": final_status,
+        "comment": final_comment,
+        "updated_at": now,
+    }
+    if has_status and final_status == "completed":
+        update_doc["completed_at"] = now
+        update_doc["approved_at"] = None
+    elif has_status:
+        update_doc["completed_at"] = None
+        update_doc["approved_at"] = None
+    else:
+        update_doc["completed_at"] = task.get("completed_at")
+        update_doc["approved_at"] = task.get("approved_at")
+
+    checklist_item_title = ""
+    if checklist_index_raw is not None:
+        try:
+            checklist_index = int(checklist_index_raw)
+        except (TypeError, ValueError):
+            return jsonify({"message": "checklist_index must be an integer"}), 400
+        checklist_done = bool(checklist_done_raw)
+        checklist = task.get("checklist_items") or []
+        if not isinstance(checklist, list) or not checklist:
+            return jsonify({"message": "Checklist not available for this task"}), 400
+        if checklist_index < 0 or checklist_index >= len(checklist):
+            return jsonify({"message": "Checklist index out of range"}), 400
+        normalized_checklist = []
+        for i, item in enumerate(checklist):
+            if isinstance(item, dict):
+                title_text = str(item.get("title") or "").strip()
+                done_flag = bool(item.get("done"))
+            else:
+                title_text = str(item or "").strip()
+                done_flag = False
+            if i == checklist_index:
+                done_flag = checklist_done
+                checklist_item_title = title_text or f"Checklist {i + 1}"
+            normalized_checklist.append({"title": title_text or f"Checklist {i + 1}", "done": done_flag})
+        update_doc["checklist_items"] = normalized_checklist
+
+    push_doc = {
+        "activity": {
+            "type": "status_changed",
+            "by": str(claims.get("login_id") or claims.get("employee_name") or "user"),
+            "at": now,
+            "text": f"Status changed to {final_status}",
+        }
+    }
+    if checklist_index_raw is not None:
+        push_doc["activity"] = {
+            "type": "checklist_updated",
+            "by": str(claims.get("login_id") or claims.get("employee_name") or "user"),
+            "at": now,
+            "text": f"Checklist item '{checklist_item_title or 'item'}' marked {'done' if bool(checklist_done_raw) else 'pending'}",
+        }
+    if has_comment and final_comment:
+        push_doc["comments"] = {
+            "by": str(claims.get("login_id") or claims.get("employee_name") or "user"),
+            "text": final_comment,
+            "at": now,
+        }
+
+    db.tasks.update_one(
+        {"_id": task.get("_id")},
+        {
+            "$set": update_doc,
+            "$push": push_doc,
+        },
+    )
+    persist_mock_db_now()
+    saved = db.tasks.find_one({"_id": task.get("_id")})
+    return jsonify({"message": "Task status updated", "task": _serialize_task(saved)})
+
+
+@app.patch("/tasks/<task_id>/checklist")
+@user_auth_required
+@limiter.limit("480 per hour")
+def update_task_checklist_item(task_id):
+    payload = request.get_json(silent=True) or {}
+    index = payload.get("index")
+    done = bool(payload.get("done"))
+
+    try:
+        idx = int(index)
+    except (TypeError, ValueError):
+        return jsonify({"message": "index must be an integer"}), 400
+
+    task_query = _task_query_from_param(task_id)
+    if not task_query:
+        return jsonify({"message": "Invalid task id"}), 400
+
+    claims = getattr(g, "user_claims", {}) or {}
+    actor = str(claims.get("login_id") or claims.get("employee_name") or "user")
+
+    task = db.tasks.find_one(task_query)
+    if not task:
+        return jsonify({"message": "Task not found"}), 404
+    if not _task_access_allowed_for_user(task, claims):
+        return jsonify({"message": "Not allowed to update this task"}), 403
+
+    checklist = task.get("checklist_items") or []
+    if not isinstance(checklist, list) or not checklist:
+        return jsonify({"message": "Checklist not available for this task"}), 400
+    if idx < 0 or idx >= len(checklist):
+        return jsonify({"message": "Checklist index out of range"}), 400
+
+    normalized = []
+    for i, item in enumerate(checklist):
+        if isinstance(item, dict):
+            title_text = str(item.get("title") or "").strip()
+            done_flag = bool(item.get("done"))
+        else:
+            title_text = str(item or "").strip()
+            done_flag = False
+        if i == idx:
+            done_flag = done
+        normalized.append({"title": title_text or f"Checklist {i + 1}", "done": done_flag})
+
+    now = datetime.now()
+    item_title = normalized[idx].get("title") or f"Checklist {idx + 1}"
+
+    db.tasks.update_one(
+        {"_id": task.get("_id")},
+        {
+            "$set": {
+                "checklist_items": normalized,
+                "updated_at": now,
+            },
+            "$push": {
+                "activity": {
+                    "type": "checklist_updated",
+                    "by": actor,
+                    "at": now,
+                    "text": f"Checklist item '{item_title}' marked {'done' if done else 'pending'}",
+                }
+            },
+        },
+    )
+    persist_mock_db_now()
+    saved = db.tasks.find_one({"_id": task.get("_id")})
+    return jsonify({"message": "Checklist updated", "task": _serialize_task(saved)})
+
+
+@app.post("/tasks/<task_id>/proof_metadata")
+@user_auth_required
+@limiter.limit("240 per hour")
+def add_task_proof_metadata(task_id):
+    payload = request.get_json(silent=True) or {}
+    files = payload.get("files") or []
+    if not isinstance(files, list) or not files:
+        return jsonify({"message": "files array is required"}), 400
+
+    task_query = _task_query_from_param(task_id)
+    if not task_query:
+        return jsonify({"message": "Invalid task id"}), 400
+
+    claims = getattr(g, "user_claims", {}) or {}
+    actor = str(claims.get("login_id") or claims.get("employee_name") or "user")
+
+    task = db.tasks.find_one(task_query)
+    if not task:
+        return jsonify({"message": "Task not found"}), 404
+    if not _task_access_allowed_for_user(task, claims):
+        return jsonify({"message": "Not allowed to update this task"}), 403
+
+    clean_files = []
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        name = str(f.get("name") or "").strip()
+        if not name:
+            continue
+        clean_files.append(
+            {
+                "name": name,
+                "size": int(f.get("size") or 0),
+                "type": str(f.get("type") or ""),
+                "uploaded_by": actor,
+                "uploaded_at": datetime.now(),
+            }
+        )
+
+    if not clean_files:
+        return jsonify({"message": "No valid files provided"}), 400
+
+    db.tasks.update_one(
+        {"_id": task.get("_id")},
+        {
+            "$set": {"updated_at": datetime.now()},
+            "$push": {
+                "attachments": {"$each": clean_files},
+                "activity": {
+                    "type": "proof_uploaded",
+                    "by": actor,
+                    "at": datetime.now(),
+                    "text": f"Uploaded {len(clean_files)} proof file(s)",
+                },
+            },
+        },
+    )
+    persist_mock_db_now()
+    saved = db.tasks.find_one({"_id": task.get("_id")})
+    return jsonify({"message": "Proof uploaded", "task": _serialize_task(saved)})
+
+
+@app.patch("/admin/tasks/<task_id>/status")
+@admin_auth_required
+@limiter.limit("240 per hour")
+def admin_update_task_status(task_id):
+    payload = request.get_json(silent=True) or {}
+    next_status = _normalize_task_status(payload.get("status"))
+    comment = str(payload.get("comment") or "").strip()
+
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        oid = ObjectId(task_id)
+    except InvalidId:
+        return jsonify({"message": "Invalid task id"}), 400
+
+    task = db.tasks.find_one({"_id": oid})
+    if not task:
+        return jsonify({"message": "Task not found"}), 404
+
+    now = datetime.now()
+    update_doc = {
+        "status": next_status,
+        "comment": comment,
+        "updated_at": now,
+    }
+    if next_status == "completed":
+        update_doc["completed_at"] = now
+        update_doc["approved_at"] = None
+    elif next_status == "approved":
+        update_doc["approved_at"] = now
+        update_doc["completed_at"] = task.get("completed_at") or now
+    else:
+        update_doc["completed_at"] = None
+        update_doc["approved_at"] = None
+
+    db.tasks.update_one(
+        {"_id": oid},
+        {
+            "$set": update_doc,
+            "$push": {
+                "activity": {
+                    "type": "status_changed",
+                    "by": str((getattr(g, "admin_claims", {}) or {}).get("sub") or "admin"),
+                    "at": now,
+                    "text": f"Status changed to {next_status}",
+                }
+            },
+        },
+    )
+    persist_mock_db_now()
+    saved = db.tasks.find_one({"_id": oid})
+    return jsonify({"message": "Task status updated", "task": _serialize_task(saved)})
+
+
+@app.post("/admin/tasks/<task_id>/reminder")
+@admin_auth_required
+@limiter.limit("240 per hour")
+def admin_send_task_reminder(task_id):
+    payload = request.get_json(silent=True) or {}
+    custom_text = str(payload.get("message") or "").strip()
+
+    task_query = _task_query_from_param(task_id)
+    if not task_query:
+        return jsonify({"message": "Invalid task id"}), 400
+
+    task = db.tasks.find_one(task_query)
+    if not task:
+        return jsonify({"message": "Task not found"}), 404
+
+    now = datetime.now()
+    actor = str((getattr(g, "admin_claims", {}) or {}).get("sub") or "admin")
+    task_title = str(task.get("title") or "Task").strip() or "Task"
+    text = custom_text or f"Reminder sent for '{task_title}'"
+
+    db.tasks.update_one(
+        {"_id": task.get("_id")},
+        {
+            "$set": {
+                "updated_at": now,
+            },
+            "$push": {
+                "activity": {
+                    "type": "reminder_sent",
+                    "by": actor,
+                    "at": now,
+                    "text": text,
+                }
+            },
+        },
+    )
+    persist_mock_db_now()
+    saved = db.tasks.find_one({"_id": task.get("_id")})
+    return jsonify({"message": "Reminder sent", "task": _serialize_task(saved)})
+
+
+@app.delete("/tasks/<task_id>")
+@admin_auth_required
+@limiter.limit("240 per hour")
+def delete_task(task_id):
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        oid = ObjectId(task_id)
+    except InvalidId:
+        return jsonify({"message": "Invalid task id"}), 400
+
+    task = db.tasks.find_one({"_id": oid})
+    if not task:
+        return jsonify({"message": "Task not found"}), 404
+
+    db.tasks.delete_one({"_id": oid})
+    persist_mock_db_now()
+    log_audit("task_deleted", target={"task_id": task_id, "title": task.get("title")})
+    return jsonify({"message": "Task deleted"})
 
 
 @app.post("/stop_camera")
@@ -3423,6 +4360,273 @@ def get_attendance():
             ),
             500,
         )
+
+
+def _parse_history_date_range(default_days: int = 30):
+    from_raw = str(request.args.get("from_date", "")).strip()
+    to_raw = str(request.args.get("to_date", "")).strip()
+
+    today_ist = ist_now().date()
+    end_date = today_ist
+    start_date = today_ist - timedelta(days=max(1, int(default_days)) - 1)
+
+    if from_raw:
+        start_date = datetime.strptime(from_raw, "%Y-%m-%d").date()
+    if to_raw:
+        end_date = datetime.strptime(to_raw, "%Y-%m-%d").date()
+
+    if start_date > end_date:
+        raise ValueError("from_date cannot be after to_date")
+
+    if (end_date - start_date).days > 365:
+        raise ValueError("Date range cannot exceed 365 days")
+
+    return start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+
+
+def _serialize_attendance_history_rows(rows, fallback_employee_name: str = ""):
+    items = []
+    for row in rows or []:
+        normalized = normalize_attendance_row_times(row) or {}
+        normalized["id"] = str(normalized.pop("_id", ""))
+        normalized["employee_id"] = str(normalized.get("employee_id") or "")
+        if fallback_employee_name and not normalized.get("employee_name"):
+            normalized["employee_name"] = fallback_employee_name
+
+        raw_status = str(normalized.get("status") or "").strip().lower()
+        raw_timing = str(normalized.get("timing_status") or "").strip().lower()
+        is_leave = bool(normalized.get("leave_marked")) or raw_status == "leave" or raw_timing == "on leave"
+
+        if is_leave:
+            normalized["status"] = "leave_marked"
+            normalized["timing_status"] = "On Leave"
+        else:
+            if normalized.get("check_out"):
+                normalized["status"] = "checked_out"
+            elif normalized.get("check_in"):
+                normalized["status"] = "checked_in"
+            else:
+                normalized["status"] = "absent"
+            normalized["timing_status"] = normalized.get("timing_status") or normalized.get("exit_status") or normalized.get("entry_status")
+
+        normalized["manual_entry"] = bool(normalized.get("manual_entry"))
+        normalized.pop("created_at", None)
+        normalized.pop("updated_at", None)
+        items.append(normalized)
+    return items
+
+
+@app.get("/admin/employee_attendance_history")
+@admin_auth_required
+def admin_employee_attendance_history():
+    employee_id = str(request.args.get("employee_id", "")).strip()
+    if not employee_id:
+        return jsonify({"message": "employee_id is required"}), 400
+
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    try:
+        employee_oid = ObjectId(employee_id)
+    except InvalidId:
+        return jsonify({"message": "Invalid employee id"}), 400
+
+    employee = db.employees.find_one({"_id": employee_oid})
+    if not employee:
+        return jsonify({"message": "Employee not found"}), 404
+
+    try:
+        from_date, to_date = _parse_history_date_range(default_days=30)
+    except ValueError as error:
+        return jsonify({"message": str(error)}), 400
+
+    today_text = ist_now().strftime("%Y-%m-%d")
+    if from_date <= today_text <= to_date:
+        attendance_manager.auto_mark_absent_for_date(today_text)
+
+    rows = list(
+        db.attendance.find({
+            "employee_id": employee_oid,
+            "date": {"$gte": from_date, "$lte": to_date},
+        }).sort("date", -1)
+    )
+
+    return jsonify({
+        "employee_id": employee_id,
+        "employee_name": str(employee.get("name") or ""),
+        "from_date": from_date,
+        "to_date": to_date,
+        "rows": _serialize_attendance_history_rows(rows, fallback_employee_name=str(employee.get("name") or "")),
+    })
+
+
+@app.get("/user/attendance_history")
+@user_auth_required
+def user_attendance_history():
+    claims = getattr(g, "user_claims", {}) or {}
+    employee_id = str(claims.get("employee_id") or "").strip()
+    if not employee_id:
+        return jsonify({"message": "Invalid user token"}), 401
+
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    try:
+        employee_oid = ObjectId(employee_id)
+    except InvalidId:
+        return jsonify({"message": "Invalid user token"}), 401
+
+    employee = db.employees.find_one({"_id": employee_oid})
+    if not employee:
+        return jsonify({"message": "Employee not found"}), 404
+
+    try:
+        from_date, to_date = _parse_history_date_range(default_days=30)
+    except ValueError as error:
+        return jsonify({"message": str(error)}), 400
+
+    today_text = ist_now().strftime("%Y-%m-%d")
+    if from_date <= today_text <= to_date:
+        attendance_manager.auto_mark_absent_for_date(today_text)
+
+    rows = list(
+        db.attendance.find({
+            "employee_id": employee_oid,
+            "date": {"$gte": from_date, "$lte": to_date},
+        }).sort("date", -1)
+    )
+
+    return jsonify({
+        "employee_id": employee_id,
+        "employee_name": str(employee.get("name") or claims.get("employee_name") or ""),
+        "from_date": from_date,
+        "to_date": to_date,
+        "rows": _serialize_attendance_history_rows(
+            rows,
+            fallback_employee_name=str(employee.get("name") or claims.get("employee_name") or ""),
+        ),
+    })
+
+
+@app.post("/attendance/manual")
+@admin_auth_required
+@limiter.limit("120 per hour")
+def add_manual_attendance():
+    payload = request.get_json(silent=True) or {}
+    employee_id = str(payload.get("employee_id") or "").strip()
+    date_text = str(payload.get("date") or "").strip()
+    check_in_raw = str(payload.get("check_in") or "").strip()
+    check_out_raw = str(payload.get("check_out") or "").strip()
+    reason = str(payload.get("reason") or "").strip()
+
+    if not employee_id:
+        return jsonify({"message": "Employee is required"}), 400
+    if not date_text:
+        return jsonify({"message": "Date is required"}), 400
+    if not check_in_raw:
+        return jsonify({"message": "Check-in time is required"}), 400
+    if not reason:
+        return jsonify({"message": "Reason is required"}), 400
+
+    try:
+        date_value = datetime.strptime(date_text, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return jsonify({"message": "Invalid date format. Use YYYY-MM-DD."}), 400
+
+    def _normalize_hms(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                dt = datetime.strptime(text, fmt)
+                return dt.strftime("%H:%M:%S")
+            except ValueError:
+                continue
+        raise ValueError("invalid_time")
+
+    try:
+        check_in_hms = _normalize_hms(check_in_raw)
+        check_out_hms = _normalize_hms(check_out_raw) if check_out_raw else ""
+    except ValueError:
+        return jsonify({"message": "Invalid time format. Use HH:MM or HH:MM:SS."}), 400
+
+    if check_out_hms and check_out_hms < check_in_hms:
+        return jsonify({"message": "Check-out time cannot be earlier than check-in time for the selected date."}), 400
+
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    try:
+        employee_oid = ObjectId(employee_id)
+    except InvalidId:
+        return jsonify({"message": "Invalid employee id"}), 400
+
+    employee = db.employees.find_one({"_id": employee_oid})
+    if not employee:
+        return jsonify({"message": "Employee not found"}), 404
+
+    existing = db.attendance.find_one({"employee_id": employee_oid, "date": date_value})
+    if existing:
+        return jsonify({"message": "Attendance already exists for this employee on selected date"}), 409
+
+    ist_tz = ist_now().tzinfo
+    check_in_ist = datetime.strptime(f"{date_value} {check_in_hms}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=ist_tz)
+    check_in_at = check_in_ist.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    check_out_at = None
+    if check_out_hms:
+        check_out_ist = datetime.strptime(f"{date_value} {check_out_hms}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=ist_tz)
+        check_out_at = check_out_ist.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    entry_status = "Late" if check_in_hms > "09:30:00" else "On Time"
+    exit_status = None
+    timing_status = entry_status
+    if check_out_hms:
+        exit_status = "Left Early" if check_out_hms < "16:30:00" else "On Time Exit"
+        timing_status = exit_status
+
+    now = datetime.now(timezone.utc)
+    doc = {
+        "employee_id": employee_oid,
+        "employee_name": employee.get("name") or "",
+        "date": date_value,
+        "status": timing_status,
+        "entry_status": entry_status,
+        "exit_status": exit_status,
+        "timing_status": timing_status,
+        "check_in": check_in_hms,
+        "check_in_at": check_in_at,
+        "check_out": check_out_hms or None,
+        "check_out_at": check_out_at,
+        "entry_mode": "manual_admin",
+        "exit_mode": "manual_admin" if check_out_hms else None,
+        "manual_entry": True,
+        "manual_reason": reason,
+        "manual_marked_by": str(getattr(g, "admin_claims", {}).get("username") or "admin"),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    inserted = db.attendance.insert_one(doc)
+    persist_mock_db_now()
+    row = db.attendance.find_one({"_id": inserted.inserted_id})
+    row = normalize_attendance_row_times(row) or {}
+    row["id"] = str(row.pop("_id"))
+    row["employee_id"] = str(row.get("employee_id"))
+    row["status"] = "checked_out" if row.get("check_out") else "checked_in"
+    row["timing_status"] = row.get("timing_status") or row.get("exit_status") or row.get("entry_status")
+    row["manual_entry"] = bool(row.get("manual_entry"))
+    row.pop("created_at", None)
+    row.pop("updated_at", None)
+
+    log_audit(
+        "admin_manual_attendance_added",
+        target={"employee_id": employee_id, "employee_name": employee.get("name")},
+        details={"date": date_value, "check_in": check_in_hms, "check_out": check_out_hms or None, "reason": reason},
+    )
+
+    return jsonify({"message": "Manual attendance added", "attendance": row}), 201
 
 
 @app.get("/employees")

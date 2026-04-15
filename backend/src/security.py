@@ -108,6 +108,9 @@ def decode_user_token(token: str) -> dict:
 def admin_auth_required(handler):
     @wraps(handler)
     def wrapped(*args, **kwargs):
+        if request.method == "OPTIONS":
+            return "", 204
+
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             return jsonify({"message": "Missing bearer token"}), 401
@@ -134,6 +137,9 @@ def admin_auth_required(handler):
 def user_auth_required(handler):
     @wraps(handler)
     def wrapped(*args, **kwargs):
+        if request.method == "OPTIONS":
+            return "", 204
+
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             return jsonify({"message": "Missing bearer token"}), 401

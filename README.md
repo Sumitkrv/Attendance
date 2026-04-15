@@ -70,15 +70,16 @@ Backend runs on `http://localhost:5001` by default.
 ```bash
 cd frontend
 npm install
-npm run dev -- --host 127.0.0.1 --port 5173
+npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
 Frontend routes:
 
 - `http://127.0.0.1:5173/admin`
 - `http://127.0.0.1:5173/user`
+- Or use your computer's LAN IP from another device on the same Wi-Fi/hotspot
 
-The backend CORS allowlist must include `http://127.0.0.1:5173` and `http://localhost:5173` (already set in `backend/.env.dev`).
+Local dev now allows browser clients on your LAN/hotspot network to reach the API; for public deployment, keep CORS restricted in the production env.
 
 > Note: all admin APIs (except `/health` and `/admin/login`) now require JWT bearer token.
 

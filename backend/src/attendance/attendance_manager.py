@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 from typing import Optional
 from bson import ObjectId
 from pymongo import ASCENDING
+from pymongo.errors import DuplicateKeyError
 
 
 try:
@@ -11,10 +12,11 @@ except Exception:
     IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 
-ENTRY_ON_TIME_START = dt_time(hour=11, minute=0)
-ENTRY_ON_TIME_END = dt_time(hour=11, minute=30)
-EXIT_ON_TIME_START = dt_time(hour=18, minute=30)
+ENTRY_ON_TIME_START = dt_time(hour=9, minute=0)
+ENTRY_ON_TIME_END = dt_time(hour=9, minute=30)
+EXIT_ON_TIME_START = dt_time(hour=16, minute=30)
 EXIT_ON_TIME_END = dt_time(hour=19, minute=0)
+AUTO_ABSENT_MARK_TIME = dt_time(hour=17, minute=15)
 
 
 def utc_now() -> datetime:
@@ -39,6 +41,13 @@ def _from_iso(value: str) -> Optional[datetime]:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except Exception:
         return None
+
+def _coerce_datetime(value) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        return _from_iso(value)
+    return None
 
 
 def _legacy_hms_to_utc_iso(date_str: Optional[str], hms: Optional[str]) -> Optional[str]:
@@ -95,21 +104,24 @@ def _entry_status_for_time(now_ist: datetime) -> str:
     """Entry timing status based on IST server time.
 
     Rules:
-    - 11:00 to 11:30 -> On Time
-    - after 11:30 -> Late
-    - before 11:00 -> On Time (allowed early entry)
+    - from 9:00 to 9:30 -> On Time
+    - before 9:00 -> On Time
+    - after 9:30 -> Late
     """
     now_local_time = now_ist.timetz().replace(tzinfo=None)
-    return "Late" if now_local_time > ENTRY_ON_TIME_END else "On Time"
+    if now_local_time > ENTRY_ON_TIME_END:
+        return "Late"
+    if now_local_time < ENTRY_ON_TIME_START:
+        return "On Time"
+    return "On Time"
 
 
 def _exit_status_for_time(now_ist: datetime) -> str:
     """Exit timing status based on IST server time.
 
     Rules:
-    - before 18:30 -> Left Early
-    - 18:30 to 19:00 -> On Time Exit
-    - after 19:00 -> On Time Exit
+    - before 16:30 -> Left Early
+    - 16:30 and later -> On Time Exit
     """
     now_local_time = now_ist.timetz().replace(tzinfo=None)
     return "Left Early" if now_local_time < EXIT_ON_TIME_START else "On Time Exit"
@@ -140,21 +152,93 @@ class AttendanceManager:
     def get_employee_by_name(self, name: str):
         return self.employees.find_one({"name": name})
 
-    def mark_attendance(self, employee_name: str, source: str = "auto") -> dict:
+    def _is_employee_active(self, employee: dict) -> bool:
+        if not isinstance(employee, dict):
+            return False
+        status_text = str(employee.get("status") or "").strip().lower()
+        if status_text == "inactive":
+            return False
+        if isinstance(employee.get("is_active"), bool):
+            return bool(employee.get("is_active"))
+        if isinstance(employee.get("active"), bool):
+            return bool(employee.get("active"))
+        return True
+
+    def auto_mark_absent_for_date(self, date_str: str) -> int:
+        """Auto mark absent for active employees with no attendance after 5:15 PM IST.
+
+        Returns the number of absent rows inserted.
         """
-        Attendance rules:
-        - first detection in a day -> check-in
-        - later detections -> check-out (updates latest check-out)
-        """
-        employee = self.get_employee_by_name(employee_name)
-        if not employee:
-            return {"status": "error", "message": f"Employee '{employee_name}' not found"}
+        date_text = str(date_str or "").strip()
+        if not date_text:
+            return 0
+
+        try:
+            target_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+        except ValueError:
+            return 0
+
+        now_ist = ist_now()
+        today_ist = now_ist.date()
+
+        if target_date > today_ist:
+            return 0
+        if target_date == today_ist and now_ist.timetz().replace(tzinfo=None) < AUTO_ABSENT_MARK_TIME:
+            return 0
+
+        existing = list(self.attendance.find({"date": date_text}, {"employee_id": 1}))
+        existing_employee_ids = {str(row.get("employee_id")) for row in existing if row.get("employee_id") is not None}
 
         now_utc = utc_now()
-        now_ist = now_utc.astimezone(IST_TZ)
+        inserted = 0
+        employees = list(self.employees.find({}, {"_id": 1, "name": 1, "status": 1, "is_active": 1, "active": 1}))
+        for employee in employees:
+            if not self._is_employee_active(employee):
+                continue
+            employee_id = employee.get("_id")
+            if employee_id is None:
+                continue
+            if str(employee_id) in existing_employee_ids:
+                continue
+
+            doc = {
+                "employee_id": employee_id,
+                "employee_name": employee.get("name") or "",
+                "date": date_text,
+                "status": "absent",
+                "entry_status": None,
+                "exit_status": None,
+                "timing_status": "Absent",
+                "check_in": None,
+                "check_in_at": None,
+                "check_out": None,
+                "check_out_at": None,
+                "entry_mode": "auto_absent",
+                "exit_mode": None,
+                "manual_entry": False,
+                "auto_absent": True,
+                "created_at": now_utc,
+                "updated_at": now_utc,
+            }
+            try:
+                self.attendance.insert_one(doc)
+                inserted += 1
+            except DuplicateKeyError:
+                continue
+
+        if inserted > 0:
+            self._notify_change()
+        return inserted
+
+    def mark_attendance(self, employee_name: str, source: str = "auto", reference_at: Optional[datetime] = None) -> dict:
+        now_utc = utc_now()
+        effective_utc = _coerce_datetime(reference_at) if source == "manual" else None
+        if effective_utc is None:
+            effective_utc = now_utc
+        now_ist = effective_utc.astimezone(IST_TZ)
         date_str = now_ist.strftime("%Y-%m-%d")
         time_str = now_ist.strftime("%H:%M:%S")
-        now_utc_iso = _to_utc_iso(now_utc)
+        now_utc_iso = _to_utc_iso(effective_utc)
 
         record = self.attendance.find_one({"employee_id": employee["_id"], "date": date_str})
 
@@ -176,7 +260,7 @@ class AttendanceManager:
                     "entry_mode": source,
                     "exit_mode": None,
                     "manual_entry": source == "manual",
-                    "created_at": now_utc,
+                    "created_at": effective_utc,
                     "updated_at": now_utc,
                 }
             )
@@ -194,6 +278,25 @@ class AttendanceManager:
                 "check_in": time_str,
                 "message": "Attendance marked successfully",
                 "manual_entry": source == "manual",
+            }
+
+        if (
+            record
+            and not record.get("check_in")
+            and not record.get("check_out")
+            and (bool(record.get("auto_absent")) or str(record.get("status") or "").strip().lower() == "absent")
+        ):
+            return {
+                "status": "already_absent",
+                "timing_status": "Absent",
+                "employee_name": employee_name,
+                "date": date_str,
+                "check_in": None,
+                "check_in_at": None,
+                "check_out": None,
+                "check_out_at": None,
+                "message": "Attendance auto-marked absent for today",
+                "manual_entry": False,
             }
 
         # If employee is checked-in but not checked-out yet, mark checkout immediately
@@ -246,7 +349,264 @@ class AttendanceManager:
             "manual_entry": bool(record.get("manual_entry")),
         }
 
+    def mark_entry(self, employee_name: str, source: str = "login") -> dict:
+        employee = self.get_employee_by_name(employee_name)
+        if not employee:
+            return {"status": "error", "message": f"Employee '{employee_name}' not found"}
+
+        now_utc = utc_now()
+        now_ist = now_utc.astimezone(IST_TZ)
+        date_str = now_ist.strftime("%Y-%m-%d")
+        time_str = now_ist.strftime("%H:%M:%S")
+        now_utc_iso = _to_utc_iso(now_utc)
+
+        record = self.attendance.find_one({"employee_id": employee["_id"], "date": date_str})
+
+        if not record:
+            entry_status = _entry_status_for_time(now_ist)
+            self.attendance.insert_one(
+                {
+                    "employee_id": employee["_id"],
+                    "employee_name": employee_name,
+                    "date": date_str,
+                    "status": entry_status,
+                    "entry_status": entry_status,
+                    "exit_status": None,
+                    "timing_status": entry_status,
+                    "check_in_at": now_utc_iso,
+                    "check_in": time_str,
+                    "check_out": None,
+                    "check_out_at": None,
+                    "entry_mode": source,
+                    "exit_mode": None,
+                    "manual_entry": source == "manual",
+                    "created_at": now_utc,
+                    "updated_at": now_utc,
+                }
+            )
+            self._notify_change()
+            return {
+                "status": "checked_in",
+                "timing_status": entry_status,
+                "employee_name": employee_name,
+                "date": date_str,
+                "check_in": time_str,
+                "check_in_at": now_utc_iso,
+                "check_out": None,
+                "check_out_at": None,
+                "message": "Entry marked successfully",
+            }
+
+        times = attendance_time_fields(record)
+        if (
+            record
+            and not record.get("check_in")
+            and not record.get("check_out")
+            and (bool(record.get("auto_absent")) or str(record.get("status") or "").strip().lower() == "absent")
+        ):
+            return {
+                "status": "already_absent",
+                "timing_status": "Absent",
+                "employee_name": employee_name,
+                "date": date_str,
+                "check_in": None,
+                "check_in_at": None,
+                "check_out": None,
+                "check_out_at": None,
+                "message": "Attendance auto-marked absent for today",
+            }
+
+        if not record.get("check_out"):
+            return {
+                "status": "already_checked_in",
+                "timing_status": record.get("entry_status") or record.get("timing_status"),
+                "employee_name": employee_name,
+                "date": date_str,
+                "check_in": times.get("check_in"),
+                "check_in_at": times.get("check_in_at"),
+                "check_out": times.get("check_out"),
+                "check_out_at": times.get("check_out_at"),
+                "message": "Entry already marked for today",
+            }
+
+        return {
+            "status": "already_recorded",
+            "timing_status": record.get("timing_status") or record.get("exit_status") or record.get("entry_status"),
+            "employee_name": employee_name,
+            "date": date_str,
+            "check_in": times.get("check_in"),
+            "check_in_at": times.get("check_in_at"),
+            "check_out": times.get("check_out"),
+            "check_out_at": times.get("check_out_at"),
+            "message": "Attendance is already marked for today",
+        }
+
+    def mark_exit(self, employee_name: str, source: str = "logout") -> dict:
+        employee = self.get_employee_by_name(employee_name)
+        if not employee:
+            return {"status": "error", "message": f"Employee '{employee_name}' not found"}
+
+        now_utc = utc_now()
+        now_ist = now_utc.astimezone(IST_TZ)
+        date_str = now_ist.strftime("%Y-%m-%d")
+        time_str = now_ist.strftime("%H:%M:%S")
+        now_utc_iso = _to_utc_iso(now_utc)
+
+        record = self.attendance.find_one({"employee_id": employee["_id"], "date": date_str})
+        if not record:
+            return {
+                "status": "not_checked_in",
+                "employee_name": employee_name,
+                "date": date_str,
+                "message": "Entry not found for today",
+                "check_in": None,
+                "check_in_at": None,
+                "check_out": None,
+                "check_out_at": None,
+            }
+
+        if (
+            not record.get("check_in")
+            and not record.get("check_out")
+            and (bool(record.get("auto_absent")) or str(record.get("status") or "").strip().lower() == "absent")
+        ):
+            return {
+                "status": "already_absent",
+                "timing_status": "Absent",
+                "employee_name": employee_name,
+                "date": date_str,
+                "check_in": None,
+                "check_in_at": None,
+                "check_out": None,
+                "check_out_at": None,
+                "message": "Attendance auto-marked absent for today",
+            }
+
+        if record.get("check_out"):
+            times = attendance_time_fields(record)
+            return {
+                "status": "already_recorded",
+                "timing_status": record.get("timing_status") or record.get("exit_status") or record.get("entry_status"),
+                "employee_name": employee_name,
+                "date": date_str,
+                "check_in": times.get("check_in"),
+                "check_in_at": times.get("check_in_at"),
+                "check_out": times.get("check_out"),
+                "check_out_at": times.get("check_out_at"),
+                "message": "Exit already marked for today",
+            }
+
+        exit_status = _exit_status_for_time(now_ist)
+        self.attendance.update_one(
+            {"_id": record["_id"]},
+            {
+                "$set": {
+                    "status": exit_status,
+                    "exit_status": exit_status,
+                    "timing_status": exit_status,
+                    "check_out": time_str,
+                    "check_out_at": now_utc_iso,
+                    "exit_mode": source,
+                    "manual_entry": bool(record.get("manual_entry")) or source == "manual",
+                    "updated_at": now_utc,
+                }
+            },
+        )
+        self._notify_change()
+
+        check_in_times = attendance_time_fields(record)
+        return {
+            "status": "checked_out",
+            "timing_status": exit_status,
+            "employee_name": employee_name,
+            "date": date_str,
+            "check_in": check_in_times.get("check_in"),
+            "check_in_at": check_in_times.get("check_in_at"),
+            "check_out": time_str,
+            "check_out_at": now_utc_iso,
+            "message": "Exit marked successfully",
+        }
+
+    def mark_leave(self, employee_name: str, source: str = "employee") -> dict:
+        employee = self.get_employee_by_name(employee_name)
+        if not employee:
+            return {"status": "error", "message": f"Employee '{employee_name}' not found"}
+
+        now_utc = utc_now()
+        now_ist = now_utc.astimezone(IST_TZ)
+        date_str = now_ist.strftime("%Y-%m-%d")
+
+        record = self.attendance.find_one({"employee_id": employee["_id"], "date": date_str})
+        if not record:
+            self.attendance.insert_one(
+                {
+                    "employee_id": employee["_id"],
+                    "employee_name": employee_name,
+                    "date": date_str,
+                    "status": "Leave",
+                    "entry_status": None,
+                    "exit_status": None,
+                    "timing_status": "On Leave",
+                    "check_in_at": None,
+                    "check_in": None,
+                    "check_out": None,
+                    "check_out_at": None,
+                    "entry_mode": source,
+                    "exit_mode": None,
+                    "manual_entry": source == "manual",
+                    "leave_marked": True,
+                    "created_at": now_utc,
+                    "updated_at": now_utc,
+                }
+            )
+            self._notify_change()
+            return {
+                "status": "leave_marked",
+                "timing_status": "On Leave",
+                "employee_name": employee_name,
+                "date": date_str,
+                "check_in": None,
+                "check_in_at": None,
+                "check_out": None,
+                "check_out_at": None,
+                "message": "Leave marked successfully",
+            }
+
+        times = attendance_time_fields(record)
+        current_status = str(record.get("status") or "").strip().lower()
+        current_timing_status = str(record.get("timing_status") or "").strip().lower()
+        is_leave = bool(record.get("leave_marked")) or current_status == "leave" or current_timing_status == "on leave"
+        if is_leave:
+            return {
+                "status": "already_on_leave",
+                "timing_status": "On Leave",
+                "employee_name": employee_name,
+                "date": date_str,
+                "check_in": times.get("check_in"),
+                "check_in_at": times.get("check_in_at"),
+                "check_out": times.get("check_out"),
+                "check_out_at": times.get("check_out_at"),
+                "message": "Leave already marked for today",
+            }
+
+        derived_status = "checked_out" if record.get("check_out") else "checked_in"
+        return {
+            "status": "attendance_exists",
+            "employee_name": employee_name,
+            "date": date_str,
+            "current_status": derived_status,
+            "timing_status": record.get("timing_status") or record.get("exit_status") or record.get("entry_status"),
+            "check_in": times.get("check_in"),
+            "check_in_at": times.get("check_in_at"),
+            "check_out": times.get("check_out"),
+            "check_out_at": times.get("check_out_at"),
+            "message": "Attendance already marked for today. Leave cannot be marked now",
+        }
+
     def list_attendance(self, date: Optional[str] = None) -> list:
+        if date:
+            self.auto_mark_absent_for_date(date)
+
         query = {"date": date} if date else {}
         rows = list(self.attendance.find(query).sort([("date", -1), ("check_in", -1)]))
         if not rows:
@@ -259,8 +619,19 @@ class AttendanceManager:
                 row["id"] = str(row.pop("_id"))
             if row.get("employee_id") is not None:
                 row["employee_id"] = str(row["employee_id"])
-            row["status"] = "checked_out" if row.get("check_out") else "checked_in"
-            row["timing_status"] = row.get("timing_status") or row.get("exit_status") or row.get("entry_status")
+            raw_status = str(row.get("status") or "").strip().lower()
+            raw_timing_status = str(row.get("timing_status") or "").strip().lower()
+            is_leave = bool(row.get("leave_marked")) or raw_status == "leave" or raw_timing_status == "on leave"
+            is_absent = bool(row.get("auto_absent")) or raw_status == "absent"
+            if is_leave:
+                row["status"] = "leave"
+                row["timing_status"] = "On Leave"
+            elif is_absent:
+                row["status"] = "absent"
+                row["timing_status"] = "Absent"
+            else:
+                row["status"] = "checked_out" if row.get("check_out") else "checked_in"
+                row["timing_status"] = row.get("timing_status") or row.get("exit_status") or row.get("entry_status")
             row["manual_entry"] = bool(row.get("manual_entry"))
             row.pop("created_at", None)
             row.pop("updated_at", None)

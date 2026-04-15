@@ -3,10 +3,24 @@ function sanitizeBaseUrl(value) {
 }
 
 const PROD_FALLBACK_API_BASE = 'https://attendance-production-bb51.up.railway.app'
-const DEV_FALLBACK_API_BASE = 'http://127.0.0.1:5001'
+
+function formatHostForUrl(hostname) {
+  const value = String(hostname || '').trim()
+  if (!value) return '127.0.0.1'
+  if (value.includes(':') && !value.startsWith('[')) return `[${value}]`
+  return value
+}
+
+function getDevFallbackApiBase() {
+  if (typeof window === 'undefined' || !window.location) {
+    return 'http://127.0.0.1:5001'
+  }
+
+  return `http://${formatHostForUrl(window.location.hostname)}:5001`
+}
 
 const envBase = sanitizeBaseUrl(import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE)
-const fallbackBase = import.meta.env.PROD ? PROD_FALLBACK_API_BASE : DEV_FALLBACK_API_BASE
+const fallbackBase = import.meta.env.PROD ? PROD_FALLBACK_API_BASE : getDevFallbackApiBase()
 
 export const BASE_URL = sanitizeBaseUrl(envBase || fallbackBase)
 
