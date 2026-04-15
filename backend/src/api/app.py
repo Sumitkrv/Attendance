@@ -3473,12 +3473,11 @@ def approve_manual_request(request_id):
     if row.get("status") != "pending":
         return jsonify({"message": "Only pending requests can be approved"}), 409
 
-    attendance_result = attendance_manager.mark_attendance(row.get("employee_name", ""), source="manual")
-            attendance_result = attendance_manager.mark_attendance(
-                row.get("employee_name", ""),
-                source="manual",
-                reference_at=row.get("created_at") or row.get("requested_at"),
-            )
+    attendance_result = attendance_manager.mark_attendance(
+        row.get("employee_name", ""),
+        source="manual",
+        reference_at=row.get("created_at") or row.get("requested_at"),
+    )
     if attendance_result.get("status") == "error":
         return jsonify({"message": attendance_result.get("message", "Unable to mark attendance")}), 400
 
