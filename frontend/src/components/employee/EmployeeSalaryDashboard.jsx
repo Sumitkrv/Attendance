@@ -13,13 +13,13 @@ import './EmployeeSalaryDashboard.css'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 function fmtINR(n, compact = false) {
   const v = Number(n || 0)
   if (compact) {
     if (v >= 100000) return `₹${(v / 100000).toFixed(1)}L`
-    if (v >= 1000)   return `₹${(v / 1000).toFixed(1)}K`
+    if (v >= 1000) return `₹${(v / 1000).toFixed(1)}K`
   }
   return `₹${v.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
 }
@@ -30,14 +30,14 @@ function pct(a, b) {
 }
 
 const STATUS_META = {
-  present:   { label: 'Present',    color: '#10b981', bg: '#d1fae5', icon: CheckCircle2 },
-  late:      { label: 'Late',       color: '#f59e0b', bg: '#fef3c7', icon: Clock },
-  half_day:  { label: 'Half Day',   color: '#06b6d4', bg: '#cffafe', icon: Clock },
-  absent:    { label: 'Absent',     color: '#ef4444', bg: '#fee2e2', icon: AlertCircle },
-  leave:     { label: 'Leave',      color: '#8b5cf6', bg: '#ede9fe', icon: Calendar },
-  holiday:   { label: 'Holiday',    color: '#4f46e5', bg: '#e0e7ff', icon: Award },
-  weekend:   { label: 'Weekend',    color: '#9ca3af', bg: '#f3f4f6', icon: Award },
-  early_out: { label: 'Early Out',  color: '#fb923c', bg: '#ffedd5', icon: Clock },
+  present: { label: 'Present', color: '#10b981', bg: '#d1fae5', icon: CheckCircle2 },
+  late: { label: 'Late', color: '#f59e0b', bg: '#fef3c7', icon: Clock },
+  half_day: { label: 'Half Day', color: '#06b6d4', bg: '#cffafe', icon: Clock },
+  absent: { label: 'Absent', color: '#ef4444', bg: '#fee2e2', icon: AlertCircle },
+  leave: { label: 'Leave', color: '#8b5cf6', bg: '#ede9fe', icon: Calendar },
+  holiday: { label: 'Holiday', color: '#4f46e5', bg: '#e0e7ff', icon: Award },
+  weekend: { label: 'Weekend', color: '#9ca3af', bg: '#f3f4f6', icon: Award },
+  early_out: { label: 'Early Out', color: '#fb923c', bg: '#ffedd5', icon: Clock },
 }
 
 // ─── Animated value counter ───────────────────────────────────────────────────
@@ -74,9 +74,9 @@ function CircleRing({ pct: value, size = 100, stroke = 8, color = '#4f46e5', chi
   return (
     <div className="salary-ring-wrap" style={{ width: size, height: size }}>
       <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--surface-3)" strokeWidth={stroke} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--surface-3)" strokeWidth={stroke} />
         <circle
-          cx={size/2} cy={size/2} r={r} fill="none"
+          cx={size / 2} cy={size / 2} r={r} fill="none"
           stroke={color} strokeWidth={stroke}
           strokeDasharray={circ}
           strokeDashoffset={offset}
@@ -139,12 +139,12 @@ function ImpactRow({ icon: Icon, label, days, amount, color, bg, positive = true
 
 export default function EmployeeSalaryDashboard({ token }) {
   const today = new Date()
-  const [year, setYear]   = useState(today.getFullYear())
+  const [year, setYear] = useState(today.getFullYear())
   const [month, setMonth] = useState(today.getMonth() + 1)
 
-  const [accrual,  setAccrual]  = useState(null)
-  const [ledger,   setLedger]   = useState([])
-  const [impact,   setImpact]   = useState(null)
+  const [accrual, setAccrual] = useState(null)
+  const [ledger, setLedger] = useState([])
+  const [impact, setImpact] = useState(null)
   const [loadingA, setLoadingA] = useState(true)
   const [loadingL, setLoadingL] = useState(true)
   const [loadingI, setLoadingI] = useState(true)
@@ -182,7 +182,7 @@ export default function EmployeeSalaryDashboard({ token }) {
       const dateObj = new Date(entry.date + 'T00:00:00')
       return {
         day: dateObj.getDate(),
-        label: `${dateObj.getDate()} ${MONTHS[dateObj.getMonth()].slice(0,3)}`,
+        label: `${dateObj.getDate()} ${MONTHS[dateObj.getMonth()].slice(0, 3)}`,
         earned: entry.finalAmount || 0,
         deduction: entry.deductionAmount || 0,
         cumulative: parseFloat(cumulative.toFixed(2)),
@@ -191,9 +191,9 @@ export default function EmployeeSalaryDashboard({ token }) {
     })
   })()
 
-  const earnedPct  = accrual ? pct(accrual.earnedTillNow, accrual.monthlySalary) : 0
-  const attPct     = accrual ? Math.round(accrual.attendancePct || 0) : 0
-  const isLoading  = loadingA && loadingL && loadingI
+  const earnedPct = accrual ? pct(accrual.earnedTillNow, accrual.monthlySalary) : 0
+  const attPct = accrual ? Math.round(accrual.attendancePct || 0) : 0
+  const isLoading = loadingA && loadingL && loadingI
 
   const isCurrentMonth = year === today.getFullYear() && month === (today.getMonth() + 1)
 
@@ -352,11 +352,11 @@ export default function EmployeeSalaryDashboard({ token }) {
                   <AreaChart data={chartData} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
                     <defs>
                       <linearGradient id="gradCumulative" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%"  stopColor="#4f46e5" stopOpacity={0.25} />
+                        <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.25} />
                         <stop offset="95%" stopColor="#4f46e5" stopOpacity={0} />
                       </linearGradient>
                       <linearGradient id="gradEarned" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%"  stopColor="#10b981" stopOpacity={0.3} />
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
                         <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
                       </linearGradient>
                     </defs>
@@ -365,7 +365,7 @@ export default function EmployeeSalaryDashboard({ token }) {
                     <YAxis
                       tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
                       axisLine={false} tickLine={false}
-                      tickFormatter={v => v >= 1000 ? `₹${(v/1000).toFixed(0)}K` : `₹${v}`}
+                      tickFormatter={v => v >= 1000 ? `₹${(v / 1000).toFixed(0)}K` : `₹${v}`}
                       width={52}
                     />
                     <Tooltip content={<SalaryTooltip />} />
@@ -379,7 +379,7 @@ export default function EmployeeSalaryDashboard({ token }) {
                       />
                     )}
                     <Area type="monotone" dataKey="cumulative" stroke="#4f46e5" strokeWidth={2.5} fill="url(#gradCumulative)" dot={false} activeDot={{ r: 4, strokeWidth: 0 }} />
-                    <Area type="monotone" dataKey="earned"     stroke="#10b981" strokeWidth={1.5} fill="url(#gradEarned)"     dot={false} activeDot={{ r: 3, strokeWidth: 0 }} />
+                    <Area type="monotone" dataKey="earned" stroke="#10b981" strokeWidth={1.5} fill="url(#gradEarned)" dot={false} activeDot={{ r: 3, strokeWidth: 0 }} />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -393,17 +393,17 @@ export default function EmployeeSalaryDashboard({ token }) {
               <p className="muted small">How your attendance affects this month's salary</p>
               <div className="emp-impact-grid">
                 {[
-                  { key: 'present',   positive: true },
-                  { key: 'holiday',   positive: true },
-                  { key: 'weekend',   positive: true },
+                  { key: 'present', positive: true },
+                  { key: 'holiday', positive: true },
+                  { key: 'weekend', positive: true },
                   { key: 'paidLeave', positive: true },
-                  { key: 'halfDay',   positive: true },
-                  { key: 'absent',    positive: false },
-                  { key: 'overtime',  positive: true  },
+                  { key: 'halfDay', positive: true },
+                  { key: 'absent', positive: false },
+                  { key: 'overtime', positive: true },
                 ].map(({ key, positive }) => {
                   const imp = impact.impact[key]
                   if (!imp) return null
-                  const days  = imp.days  || 0
+                  const days = imp.days || 0
                   const hours = imp.hours || 0
                   const amount = imp.amount || 0
                   if (days === 0 && hours === 0) return null

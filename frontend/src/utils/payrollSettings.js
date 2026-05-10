@@ -25,7 +25,7 @@ export const DEFAULT_PAYROLL_SETTINGS = Object.freeze({
    * working_days — denominator = Mon–Fri-style count: days − weekends − holidays (HRMS “working days”).
    * fixed_30_days — always 30 (common Indian payroll convention).
    */
-  payrollCalculationMode: PAYROLL_CALCULATION_MODES.FIXED_30_DAYS,
+  payrollCalculationMode: PAYROLL_CALCULATION_MODES.CALENDAR_DAYS,
   /** Per-cycle registry: key "YYYY-MM" → { status, lockedAt?, finalizedAt? } */
   monthlyPayrollRegistry: {},
 })

@@ -26,12 +26,17 @@ export function buildPayrollAttendanceState(preview, year, month, company) {
   const sundaysFullMonth = countSundays(year, month)
   const saturdaysFullMonth = countSaturdays(year, month)
 
-  const daysTrackedInPeriod = n0(preview?.totalDaysInMonth) || totalDaysInMonth
+  const calendarDaysFull =
+    n0(preview?.calendarDaysInFullMonth) || n0(preview?.totalDaysInMonth) || totalDaysInMonth
+  const daysTrackedInPeriod =
+    n0(preview?.elapsedCalendarDays) || n0(preview?.daysTracked) || n0(preview?.totalDaysInMonth) || totalDaysInMonth
   const sundaysInPeriod = n0(preview?.sundaysInMonth)
   const saturdaysInPeriod = n0(preview?.saturdaysOffInMonth ?? preview?.saturdaysInMonth)
   const paidHolidaysInPeriod = n0(preview?.paidHolidayDays ?? preview?.holidayDays)
   const holidaysFromCompany = countHolidaysInMonth(company?.holidays, year, month)
   const holidaysFullMonth = holidaysFromCompany > 0 ? holidaysFromCompany : paidHolidaysInPeriod
+
+  const weekoffDaysTracked = n0(preview?.weekoffDays)
 
   const attendanceWorkingDays =
     n0(preview?.workingDaysInMonth) ||
@@ -44,18 +49,29 @@ export function buildPayrollAttendanceState(preview, year, month, company) {
   const halfDays = n0(preview?.halfDays ?? preview?.halfDayCount)
   const paidDays =
     n0(preview?.paidDays) ||
-    Math.max(0, presentDays + paidLeave + paidHolidaysInPeriod + halfDays * 0.5)
-  const lopDays =
-    n0(preview?.lopDays) ||
-    Math.max(0, attendanceWorkingDays - Math.min(attendanceWorkingDays, paidDays))
+    Math.max(
+      0,
+      presentDays + paidLeave + paidHolidaysInPeriod + weekoffDaysTracked + halfDays * 0.5,
+    )
+  const explicitLop = preview?.lopDays
+  let lopDaysCalc = 0
+  if (explicitLop != null && explicitLop !== '') {
+    lopDaysCalc = Math.max(0, n0(explicitLop))
+  } else {
+    const paidWorkingOnly = Math.max(
+      0,
+      presentDays + paidLeave + paidHolidaysInPeriod + halfDays * 0.5,
+    )
+    lopDaysCalc = Math.max(0, attendanceWorkingDays - paidWorkingOnly)
+  }
 
   const weekends = sundaysFullMonth + saturdaysFullMonth
   const holidays = holidaysFullMonth
   const paidLeaves = paidLeave
 
   return {
-    totalDays: totalDaysInMonth,
-    totalDaysInMonth,
+    totalDays: calendarDaysFull,
+    totalDaysInMonth: calendarDaysFull,
     daysTrackedInPeriod,
     sundays: sundaysFullMonth,
     saturdays: saturdaysFullMonth,
@@ -67,8 +83,9 @@ export function buildPayrollAttendanceState(preview, year, month, company) {
     paidHolidays: paidHolidaysInPeriod,
     holidaysFullMonth,
     attendanceWorkingDays,
-    /** @deprecated use attendanceWorkingDays; kept for setAttField compatibility */
     workingDays: attendanceWorkingDays,
+    weekoffDays: weekoffDaysTracked,
+    weekoffDaysTracked,
     presentDays,
     casualLeave,
     sickLeave,
@@ -80,7 +97,7 @@ export function buildPayrollAttendanceState(preview, year, month, company) {
     earlyExits: n0(preview?.earlyExits),
     latePenalty: n0(preview?.latePenalty),
     paidDays,
-    lopDays,
+    lopDays: lopDaysCalc,
     absentDays: n0(preview?.absentDays),
     attendancePct: n0(preview?.attendancePct ?? preview?.attendancePercentage),
     source: preview?.attendanceSource || 'database',
@@ -117,6 +134,8 @@ export function makeDefaultPayrollAttendanceAtt(year, month) {
     holidaysFullMonth: 0,
     attendanceWorkingDays,
     workingDays: attendanceWorkingDays,
+    weekoffDays: 0,
+    weekoffDaysTracked: 0,
     presentDays: 0,
     casualLeave: 0,
     sickLeave: 0,

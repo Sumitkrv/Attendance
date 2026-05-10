@@ -1043,6 +1043,10 @@ export default function UserPage() {
   function downloadLatestEmployeePayslip() {
     const row = dashboardLatestPayslip
     if (!row) return
+    if (row.status !== 'approved') {
+      setError("Payslip is not yet approved by admin. Please wait for HR to finalize your payslip.")
+      return
+    }
     setPayslipDownloading(true)
     setError("")
     try {
@@ -2957,17 +2961,20 @@ export default function UserPage() {
                     <p className="emp-dash-payslip-title">Latest payslip</p>
                     <p className="emp-dash-payslip-sub">
                       {dashboardLatestPayslip
-                        ? `${monthYearLabel(dashboardLatestPayslip.year, dashboardLatestPayslip.month)} · ${payslipKindLabel(dashboardLatestPayslip)} · ${formatINRWhole(dashboardLatestPayslip.net_salary)}`
-                        : 'Available once HR publishes your salary slip from the admin panel.'}
+                        ? dashboardLatestPayslip.status === 'approved'
+                          ? `${monthYearLabel(dashboardLatestPayslip.year, dashboardLatestPayslip.month)} · ${payslipKindLabel(dashboardLatestPayslip)} · ${formatINRWhole(dashboardLatestPayslip.net_salary)}`
+                          : `${monthYearLabel(dashboardLatestPayslip.year, dashboardLatestPayslip.month)} · Pending approval by admin`
+                        : 'Available once HR publishes and approves your salary slip from the admin panel.'}
                     </p>
                   </div>
                   <button
                     type="button"
                     className="emp-dash-payslip-btn"
-                    disabled={!dashboardLatestPayslip || payslipDownloading}
+                    disabled={!dashboardLatestPayslip || dashboardLatestPayslip.status !== 'approved' || payslipDownloading}
                     onClick={downloadLatestEmployeePayslip}
+                    title={dashboardLatestPayslip && dashboardLatestPayslip.status !== 'approved' ? 'Payslip not yet approved by admin' : ''}
                   >
-                    {payslipDownloading ? 'Preparing…' : 'Download Payslip'}
+                    {payslipDownloading ? 'Preparing…' : dashboardLatestPayslip?.status === 'approved' ? 'Download Payslip' : 'Awaiting Approval'}
                   </button>
                 </div>
 

@@ -1,11 +1,10 @@
 /**
- * Main payroll snapshot: divisor rules, LOP, structure on gross, live vs finalized context.
+ * Main payroll snapshot: calendar divisor, MTD payable units, structure on attendance-earned gross.
  */
 
 import { mergeCompanyPayrollSettings, payrollModeLabel } from './payrollSettings'
-import { getDaysInMonth, resolvePayableDays, calculatePayroll } from './payrollUtils'
+import { getDaysInMonth, calculatePayroll } from './payrollUtils'
 import { computeSalaryStructureAmounts } from './salaryStructureUtils'
-import { computeEarnedTillDate, computeProjectedGrossAfterLop } from './payrollProjectionUtils'
 import { resolvePayrollRunContext } from './payrollFinalizationUtils'
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100
@@ -28,31 +27,33 @@ export function computePayrollSnapshot(input) {
   const run = resolvePayrollRunContext({ year, month, company, now })
   const payrollSettings = mergeCompanyPayrollSettings(company)
 
-  const totalDaysInMonth =
+  const calendarDivisor =
     Number(att?.totalDaysInMonth) || Number(att?.totalDays) || getDaysInMonth(year, month)
-  const sundayCount = Number(att?.sundays) || 0
-  const saturdayCount = Number(att?.saturdays) || 0
-  const holidayCount = Number(att?.holidaysFullMonth) || 0
 
-  const payableDays = resolvePayableDays(payrollSettings, {
-    totalDaysInMonth,
-    sundayCount,
-    saturdayCount,
-    holidayCount,
-  })
+  const casual = Number(att.casualLeave) || 0
+  const sick = Number(att.sickLeave) || 0
+  const paidLeaveDays = Number(att.paidLeave) || casual + sick
+  const presentDays = Math.max(0, Number(att?.presentDays) || 0)
+  const halfDayEarned = (Number(att.halfDays) || 0) * 0.5
+  const holidaysPaid = Number(att.paidHolidays) || 0
+  const weekoffsInCycle = Number(att.weekoffDays) || Number(att.weekoffDaysTracked) || 0
+  const computedPaidUnits = Math.max(
+    0,
+    presentDays + paidLeaveDays + holidaysPaid + halfDayEarned + weekoffsInCycle,
+  )
+  const paidDayUnits = Number(att?.paidDays) > 0 ? Number(att.paidDays) : computedPaidUnits
 
   const lop = Math.max(0, Number(att?.lopDays) || 0)
-  const presentDays = Math.max(0, Number(att?.presentDays) || 0)
 
-  const { perDaySalary, lopDeduction } = calculatePayroll({
+  const { perDaySalary, lopDeduction, tillDateEarned } = calculatePayroll({
     grossSalary: g,
-    payableDays,
+    totalCalendarDaysInMonth: calendarDivisor,
+    payableDayUnits: paidDayUnits,
     lopDays: lop,
   })
   const perDay = perDaySalary
   const lopDed = lopDeduction
-  const projectedGrossAfterLop = computeProjectedGrossAfterLop(g, lopDed)
-  const earnedTillDate = computeEarnedTillDate(perDay, presentDays)
+  const earnedTillDate = tillDateEarned
 
   const {
     pfPct = 0,
@@ -61,17 +62,7 @@ export function computePayrollSnapshot(input) {
     otherDeductionAmt = 0,
   } = str || {}
 
-  const structure = computeSalaryStructureAmounts(g, str || {})
-
-  const casual = Number(att.casualLeave) || 0
-  const sick = Number(att.sickLeave) || 0
-  const paidLeaveDays = Number(att.paidLeave) || casual + sick
-  const halfDayEarned = (Number(att.halfDays) || 0) * 0.5
-  const computedPaidDays = Math.max(
-    0,
-    presentDays + paidLeaveDays + (Number(att.paidHolidays) || 0) + halfDayEarned,
-  )
-  const paidDays = Number(att?.paidDays) > 0 ? Number(att.paidDays) : computedPaidDays
+  const structure = computeSalaryStructureAmounts(Math.max(0, earnedTillDate), str || {})
 
   const overtimeHours = Number(att?.overtimeHours) || 0
   const otEarn = r2(Number(att?.overtimeEarnings) || (overtimeHours * (perDay / 9) * 1.5))
@@ -104,34 +95,36 @@ export function computePayrollSnapshot(input) {
   const otherDed = Number(otherDeductionAmt) || 0
 
   const structuralDeductions = r2(pf + tds + advance + otherDed + lateDed)
-  const totalDed = r2(lopDed + structuralDeductions)
-  const net = r2(totalEarnings - totalDed)
+  const totalDed = structuralDeductions
+  const net = r2(Math.max(0, totalEarnings - totalDed))
 
   const attendanceWorkingDays =
     Number(att?.attendanceWorkingDays) || Number(att?.workingDays) || 0
 
-  const attendancePct = r2((presentDays / Math.max(1, payableDays)) * 100)
+  const resolved = paidDayUnits + lop
+  const pctFromBackend = Number(att?.attendancePct)
+  const attendancePct = Number.isFinite(pctFromBackend) && pctFromBackend >= 0
+    ? r2(pctFromBackend)
+    : r2(resolved > 0 ? (paidDayUnits / resolved) * 100 : 0)
 
-  const basisFlags = [
-    payrollSettings.includeWeekendsInPayroll ? 'weekends in divisor' : 'weekends excluded from divisor',
-    payrollSettings.includeHolidaysInPayroll ? 'holidays in divisor' : 'holidays excluded from divisor',
-  ].join(' · ')
+  const basisFlags =
+    `${payrollSettings.payrollCalculationMode}: MTD accrued on gross ÷ ${calendarDivisor} calendar days`
 
   return {
     ...run,
     payrollBasisLabel: payrollModeLabel(payrollSettings.payrollCalculationMode),
     payrollBasisFlags: basisFlags,
-    payableDays,
-    totalDaysInMonth,
+    payableDays: paidDayUnits,
+    totalDaysInMonth: calendarDivisor,
     presentDays,
     attendanceWorkingDays,
     paidLeaveDays,
-    paidDays,
+    paidDays: paidDayUnits,
     lop,
     perDay,
     lopDed,
-    effGross: projectedGrossAfterLop,
-    projectedGrossAfterLop,
+    effGross: earnedTillDate,
+    projectedGrossAfterLop: earnedTillDate,
     earnedTillDate,
     fixedPct,
     pctOk,

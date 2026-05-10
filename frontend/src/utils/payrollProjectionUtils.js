@@ -1,24 +1,20 @@
 /**
- * Live-cycle payroll projection: earned MTD vs month-end estimates.
- * Per-day rate must come from payrollEngine (gross ÷ payable days).
+ * Payroll projection helpers (per-day wage from payrollUtils.calculatePayroll).
  */
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100
 
 /**
- * @param {number} perDaySalary — rounded per-day from payroll core
- * @param {number} presentDays
+ * Till-date accrued earnings from payable day-units × calendar per-day wage.
  */
-export function computeEarnedTillDate(perDaySalary, presentDays) {
+export function computeEarnedTillDate(perDaySalary, payableDayUnits) {
   const pd = r2(Number(perDaySalary) || 0)
-  const p = Math.max(0, Number(presentDays) || 0)
-  return r2(pd * p)
+  const units = Math.max(0, Number(payableDayUnits) || 0)
+  return r2(pd * units)
 }
 
 /**
- * Month-end gross after full-cycle LOP (statutory bases use full gross; LOP is separate).
- * @param {number} grossSalary
- * @param {number} lopDeduction
+ * Full-cycle gross after carving out LOP rupees only when both numbers refer to the same horizon.
  */
 export function computeProjectedGrossAfterLop(grossSalary, lopDeduction) {
   const g = Number(grossSalary) || 0

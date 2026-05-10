@@ -135,9 +135,20 @@ export function buildPayslipDocPropsFromPublishedRow(row, employeeLite = {}) {
   const lopDed = amt(dedList, 'LOP') || Number(row?.lop_deduction || 0)
 
   const totalEarnings = Number(row?.gross_salary || 0)
-  const payable = Number(row?.working_days_snapshot ?? 0)
+
+  let calendarDays
+  if (row?.calendar_days_snapshot != null && row.calendar_days_snapshot !== '') {
+    calendarDays = Number(row.calendar_days_snapshot)
+  } else if (Number.isFinite(year) && Number.isFinite(month) && month >= 1 && month <= 12) {
+    calendarDays = new Date(year, month, 0).getDate()
+  } else {
+    calendarDays = 31
+  }
+
+  const payable = Number(row?.working_days_snapshot ?? row?.payable_days_snapshot ?? 0)
+  const cd = Math.max(1, calendarDays || 1)
   const perDay =
-    payable > 0 && totalEarnings > 0 ? Math.round((totalEarnings / payable) * 100) / 100 : 0
+    grossSalary > 0 ? Math.round((grossSalary / cd) * 100) / 100 : 0
 
   const calc = {
     payableDays: payable,
@@ -158,15 +169,6 @@ export function buildPayslipDocPropsFromPublishedRow(row, employeeLite = {}) {
     totalDed: Number(row?.total_deductions ?? 0),
     net: Number(row?.net_salary ?? 0),
     attendancePct: Number(row?.attendance_pct_snapshot ?? 0),
-  }
-
-  let calendarDays
-  if (row?.calendar_days_snapshot != null && row.calendar_days_snapshot !== '') {
-    calendarDays = Number(row.calendar_days_snapshot)
-  } else if (Number.isFinite(year) && Number.isFinite(month) && month >= 1 && month <= 12) {
-    calendarDays = new Date(year, month, 0).getDate()
-  } else {
-    calendarDays = 31
   }
 
   const synced =

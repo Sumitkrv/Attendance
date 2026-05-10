@@ -8,6 +8,8 @@ from flask import Blueprint, current_app, g, jsonify, request
 from bson import ObjectId
 from bson.errors import InvalidId
 
+from src.security import admin_auth_required
+
 payroll_bp = Blueprint("payroll", __name__)
 
 
@@ -122,6 +124,7 @@ def run_payroll():
         return jsonify({"message": "No active employees found"}), 400
 
     _, days_in_month = monthrange(year, month)
+    days_in_month = int(days_in_month)
     payslips = []
     total_gross = 0
     total_net = 0
@@ -142,9 +145,9 @@ def run_payroll():
         breakdown = _calculate_salary_breakdown(ctc)
         monthly_gross = breakdown["monthly_gross"]
 
-        # Pro-rate for LOP
-        if loss_of_pay_days > 0 and working_days > 0:
-            lop_deduction = (monthly_gross / working_days) * loss_of_pay_days
+        daily_rate_bulk = monthly_gross / max(1, days_in_month)
+        if loss_of_pay_days > 0:
+            lop_deduction = round(daily_rate_bulk * loss_of_pay_days, 2)
         else:
             lop_deduction = 0
 
@@ -260,6 +263,200 @@ def list_payroll_runs():
     for r in runs:
         r["_id"] = str(r["_id"])
     return jsonify(_to_json_safe(runs))
+
+
+# ==================== Admin payslip workflow (blueprint) ====================
+# Same behaviour as src.api.app payslip routes; lives on payroll_bp so these
+# URLs always exist even if an older process missed the app-level registrations.
+
+
+def _persist_mock_db_safe():
+    try:
+        fn = current_app.config.get("persist_mock_db")
+        if callable(fn):
+            fn()
+    except Exception:
+        pass
+
+
+def _log_audit_safe(action: str, target=None):
+    try:
+        import src.api.app as app_module
+
+        app_module.log_audit(action, target=target or {})
+    except Exception:
+        pass
+
+
+def _payslip_admin_status_payload(db, employee_id: str, year: int, month: int):
+    emp_id_str = str(employee_id)
+    existing = db.payslips.find_one({"employee_id": emp_id_str, "year": year, "month": month})
+    if not existing:
+        return {"status": "none"}, 200
+
+    approved_at = existing.get("approved_at")
+    if isinstance(approved_at, datetime):
+        approved_at = approved_at.isoformat()
+
+    return {
+        "status": str(existing.get("status") or "none").strip().lower(),
+        "approved_at": approved_at,
+        "approved_by": existing.get("approved_by"),
+    }, 200
+
+
+def _payslip_admin_status_from_request(db, employee_id: str):
+    try:
+        year = int(request.args.get("year"))
+        month = int(request.args.get("month"))
+    except (TypeError, ValueError):
+        return jsonify({"status": "none"}), 200
+    payload, code = _payslip_admin_status_payload(db, employee_id, year, month)
+    return jsonify(payload), code
+
+
+def _payslip_admin_history_payload(db, employee_id: str):
+    emp_id_str = str(employee_id)
+    rows = list(
+        db.payslips.find({"employee_id": emp_id_str}).sort([("year", -1), ("month", -1)]).limit(48)
+    )
+    out = []
+    for row in rows:
+        item = {
+            "id": str(row.get("_id", "")),
+            "year": row.get("year"),
+            "month": row.get("month"),
+            "status": str(row.get("status") or "").strip().lower(),
+            "net_salary": row.get("net_salary"),
+            "gross_salary": row.get("gross_salary"),
+            "payslip_kind": str(row.get("payslip_kind") or "").strip().lower(),
+        }
+        for key in ("generated_at", "approved_at", "updated_at"):
+            val = row.get(key)
+            if isinstance(val, datetime):
+                item[key] = val.isoformat()
+            else:
+                item[key] = val
+        out.append(item)
+    return out
+
+
+def _payslip_admin_approve(db, employee_id: str, year: int, month: int):
+    if month < 1 or month > 12:
+        return jsonify({"message": "Invalid month"}), 400
+
+    try:
+        oid = ObjectId(employee_id)
+    except InvalidId:
+        return jsonify({"message": "Invalid employee id"}), 400
+
+    emp = db.employees.find_one({"_id": oid})
+    if not emp:
+        return jsonify({"message": "Employee not found"}), 404
+
+    emp_id_str = str(employee_id)
+    existing = db.payslips.find_one({"employee_id": emp_id_str, "year": year, "month": month})
+    if not existing:
+        return jsonify({"message": "No published payslip found for this period. Publish first."}), 404
+
+    now = datetime.now(timezone.utc)
+    admin_claims = getattr(g, "admin_claims", {}) or {}
+    approved_by = str(admin_claims.get("sub") or "admin")
+
+    db.payslips.update_one(
+        {"employee_id": emp_id_str, "year": year, "month": month},
+        {"$set": {
+            "status": "approved",
+            "approved_by": approved_by,
+            "approved_at": now,
+            "updated_at": now,
+        }},
+    )
+    _persist_mock_db_safe()
+    _log_audit_safe(
+        "api_approve_employee_payslip",
+        target={"employee_id": emp_id_str, "year": year, "month": month},
+    )
+    return jsonify({"message": "Payslip approved. Employee can now download.", "year": year, "month": month}), 200
+
+
+@payroll_bp.route("/api/payroll/payslip-admin", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@admin_auth_required
+def payroll_payslip_admin():
+    """Flat URL for payslip status/history/approve (avoids 405 from nested /payslips/ paths on some stacks)."""
+    db = _get_db()
+    if db is None:
+        return jsonify({"message": "Database not available"}), 503
+
+    if request.method in ("GET", "HEAD"):
+        op = (request.args.get("op") or "status").strip().lower()
+        eid = str(request.args.get("employee_id") or request.args.get("employeeId") or "").strip()
+        if not eid:
+            return jsonify({"message": "employee_id is required"}), 400
+        if op == "history":
+            return jsonify(_payslip_admin_history_payload(db, eid)), 200
+        if op == "status":
+            return _payslip_admin_status_from_request(db, eid)
+        return jsonify({"message": "Invalid op; use status or history"}), 400
+
+    if request.method == "POST":
+        payload = request.get_json(force=True, silent=True) or {}
+        op = str(payload.get("op") or request.args.get("op") or "approve").strip().lower()
+        eid = str(
+            payload.get("employee_id")
+            or payload.get("employeeId")
+            or request.args.get("employee_id")
+            or request.args.get("employeeId")
+            or "",
+        ).strip()
+        if op != "approve":
+            return jsonify({"message": "Invalid op; use approve"}), 400
+        if not eid:
+            return jsonify({"message": "employee_id is required"}), 400
+        try:
+            year = int(payload.get("year"))
+            month = int(payload.get("month"))
+        except (TypeError, ValueError):
+            return jsonify({"message": "year and month are required integers"}), 400
+        return _payslip_admin_approve(db, eid, year, month)
+
+    return "", 204
+
+
+@payroll_bp.route("/api/payroll/employee/<employee_id>/payslips/status", methods=["GET", "HEAD", "OPTIONS"])
+@admin_auth_required
+def payroll_employee_payslip_status(employee_id):
+    db = _get_db()
+    if db is None:
+        return jsonify({"message": "Database not available"}), 503
+    return _payslip_admin_status_from_request(db, employee_id)
+
+
+@payroll_bp.route("/api/payroll/employee/<employee_id>/payslips/history", methods=["GET", "HEAD", "OPTIONS"])
+@admin_auth_required
+def payroll_employee_payslips_history(employee_id):
+    db = _get_db()
+    if db is None:
+        return jsonify({"message": "Database not available"}), 503
+
+    return jsonify(_payslip_admin_history_payload(db, employee_id)), 200
+
+
+@payroll_bp.route("/api/payroll/employee/<employee_id>/payslips/approve", methods=["POST", "OPTIONS"])
+@admin_auth_required
+def payroll_employee_payslip_approve(employee_id):
+    db = _get_db()
+    if db is None:
+        return jsonify({"message": "Database not available"}), 503
+
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        year = int(body.get("year"))
+        month = int(body.get("month"))
+    except (TypeError, ValueError):
+        return jsonify({"message": "year and month are required integers"}), 400
+
+    return _payslip_admin_approve(db, str(employee_id), year, month)
 
 
 # ==================== Helpers ====================

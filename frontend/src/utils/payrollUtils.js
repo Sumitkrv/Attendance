@@ -43,15 +43,14 @@ export function countHolidaysInMonth(holidays, year, month) {
 }
 
 /**
- * Payable days in the payroll cycle (denominator for per-day salary).
- * Must NOT use attendance-period “working days” (MTD); use full-month calendar composition
- * plus company payroll rules.
+ * Historical: resolved “cycle” days used in old fixed-30 / divisor rules.
+ * Payroll per-day rate always uses calendar month length elsewhere; retained for tooling only.
  *
  * @param {ReturnType<import('./payrollSettings').mergeCompanyPayrollSettings>} settings
  * @param {{ totalDaysInMonth: number, sundayCount: number, saturdayCount: number, holidayCount: number }} fullMonth
  */
 export function resolvePayableDays(settings, fullMonth) {
-  const mode = String(settings.payrollCalculationMode || PAYROLL_CALCULATION_MODES.FIXED_30_DAYS).toLowerCase()
+  const mode = String(settings.payrollCalculationMode || PAYROLL_CALCULATION_MODES.CALENDAR_DAYS).toLowerCase()
   const includeW = settings.includeWeekendsInPayroll !== false
   const includeH = settings.includeHolidaysInPayroll !== false
 
@@ -77,23 +76,26 @@ export function resolvePayableDays(settings, fullMonth) {
 }
 
 /**
- * Core HRMS-style payroll slice (LOP from daily rate × LOP days).
+ * Calendar payroll slice: per-day = gross ÷ calendar days in month;
+ * till-date earnings = per-day × payableDayUnits (present + leaves + holidays + weekends in elapsed window).
+ * LOP ₹ = per-day × lopDays (shown separately — do not subtract again from earnings built from payable units).
  *
- * @param {{ grossSalary: number, payableDays: number, lopDays: number }} input
- * @returns {{ perDaySalary: number, lopDeduction: number, effectiveGross: number, netPayable: number }}
+ * @param {{ grossSalary: number, totalCalendarDaysInMonth: number, payableDayUnits: number, lopDays: number }} input
  */
-export function calculatePayroll({ grossSalary, payableDays, lopDays }) {
+export function calculatePayroll({ grossSalary, totalCalendarDaysInMonth, payableDayUnits, lopDays }) {
   const g = Number(grossSalary) || 0
-  const pd = Math.max(1, Number(payableDays) || 1)
+  const cal = Math.max(1, Number(totalCalendarDaysInMonth) || 1)
+  const payable = Math.max(0, Number(payableDayUnits) || 0)
   const lop = Math.max(0, Number(lopDays) || 0)
-  const perDaySalary = r2(g / pd)
+  const perDaySalary = r2(g / cal)
+  const tillDateEarned = r2(perDaySalary * payable)
   const lopDeduction = r2(perDaySalary * lop)
-  const effectiveGross = Math.max(0, r2(g - lopDeduction))
+  const effectiveGross = Math.max(0, tillDateEarned)
   return {
     perDaySalary,
     lopDeduction,
     effectiveGross,
-    /** Bank-style take-home before statutory splits is layered on in the UI. */
+    tillDateEarned,
     netPayable: effectiveGross,
   }
 }

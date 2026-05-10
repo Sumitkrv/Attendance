@@ -4876,7 +4876,12 @@ def user_payroll_accrual():
     summary = _payroll_calculator.get_month_summary(emp, year, month, up_to_day=up_to_day)
     earned = float(summary.get("earnedTillNow") or 0)
     remaining = max(0.0, round(monthly_salary - earned, 2))
-    daily_rate = monthly_salary / max(1, summary.get("workingDaysInMonth", 1))
+    import calendar as _acal
+
+    _, _ac = _acal.monthrange(year, month)
+    cal_days = max(int(_ac), int(summary.get("calendarDaysInFullMonth") or 0))
+    cal_days = max(1, cal_days)
+    daily_rate = monthly_salary / cal_days if monthly_salary > 0 else 0.0
 
     # Today's earnings only when viewing the current month
     today_earnings = 0.0
@@ -4971,9 +4976,9 @@ def user_payroll_attendance_impact():
 
     summary = _payroll_calculator.get_month_summary(emp, year, month, up_to_day)
     bd = summary.get("statusBreakdown", {})
-    monthly_salary = float(emp.get("monthly_salary") or 0)
-    working_days = summary.get("workingDaysInMonth", 1) or 1
-    daily_rate = monthly_salary / working_days
+    monthly_salary = float(emp.get("monthly_salary") or emp.get("net_target_monthly") or 0)
+    cal_days = max(1, int(summary.get("calendarDaysInFullMonth") or 0))
+    daily_rate = monthly_salary / cal_days if monthly_salary > 0 else 0.0
 
     impact = {
         "present":     {"days": bd.get("present", 0) + bd.get("late", 0) + bd.get("early_out", 0),     "amount": round((bd.get("present", 0) + bd.get("late", 0) + bd.get("early_out", 0)) * daily_rate, 2)},
@@ -4981,9 +4986,7 @@ def user_payroll_attendance_impact():
         "halfDay":     {"days": bd.get("half_day", 0),    "amount": round(bd.get("half_day", 0) * daily_rate * 0.5, 2)},
         "paidLeave":   {"days": bd.get("leave", 0),       "amount": round(bd.get("leave", 0) * daily_rate, 2)},
         "holiday":     {"days": bd.get("holiday", 0),     "amount": round(bd.get("holiday", 0) * daily_rate, 2)},
-        # Weekly offs are neutral: monthly pay is spread over payable working days only,
-        # so they do not add or subtract a separate rupee amount in this preview.
-        "weekend":     {"days": bd.get("weekend", 0),     "amount": 0.0},
+        "weekend":     {"days": bd.get("weekend", 0),     "amount": round(bd.get("weekend", 0) * daily_rate, 2)},
         "overtime":    {"hours": summary.get("totalOvertimeHours", 0), "amount": round(summary.get("totalOvertime", 0), 2)},
     }
 
@@ -8844,7 +8847,7 @@ _DEFAULT_COMPANY_TEMPLATE = {
         "salaryPayDate": "last",
         "includeWeekendsInPayroll": True,
         "includeHolidaysInPayroll": True,
-        "payrollCalculationMode": "fixed_30_days",
+        "payrollCalculationMode": "calendar_days",
         "monthlyPayrollRegistry": {},
     },
     "attendanceSettings": {
@@ -9347,7 +9350,6 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
     today = _today_ist_date()
     salary_type = str(employee.get("salary_type") or "CTC_BASED").upper()
     monthly_salary = float(employee.get("monthly_salary") or 0.0)
-
     # ════════════════════════════════════════════
     # TYPE A — IN_HAND (Gross-Up) PATH
     # ════════════════════════════════════════════
@@ -9364,7 +9366,7 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
         _saturdays = sum(1 for d in range(1, _days_in_month + 1) if _date(year, month, d).weekday() == 5)
         prorate = 1.0
         present_days = 0
-        working_days = 25
+        working_days_slot = 25
         absent_count = 0
         half_day_count = 0
         paid_days = 0.0
@@ -9385,11 +9387,15 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
         holiday_record_count = 0
         attendance_last_synced_at = ""
         attendance_source_message = ""
+        elapsed_cal = 0
+        attendance_pct_eff = 0.0
         if _payroll_ok():
             up_to_day = today.day if (year == today.year and month == today.month) else None
             smry = _payroll_calculator.get_month_summary(employee, year, month, up_to_day)
-            working_days  = smry.get("workingDaysInMonth", 25) or 25
-            _days_in_month = smry.get("totalDaysInMonth", _days_in_month) or _days_in_month
+            full_cal = int(smry.get("calendarDaysInFullMonth") or _days_in_month)
+            _days_in_month = full_cal
+            working_days_slot = int(smry.get("workingDaysInMonth") or 0) or 25
+            elapsed_cal = int(smry.get("elapsedCalendarDays") or smry.get("daysTracked") or 0)
             _sundays = smry.get("sundaysInMonth", _sundays) or _sundays
             _saturdays = smry.get("saturdaysInMonth", _saturdays) or _saturdays
             present_days  = smry.get("presentDays", 0)
@@ -9398,14 +9404,14 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
             status_breakdown = smry.get("statusBreakdown", {})
             absent_count  = smry.get("absentDays", 0) or status_breakdown.get("absent", 0)
             half_day_count = smry.get("halfDays", 0) or status_breakdown.get("half_day", 0)
-            paid_days = smry.get("paidDays", 0.0) or 0.0
+            paid_days = float(smry.get("paidDays", 0.0) or 0.0)
             weekoff_days = smry.get("weekoffDays", 0) or 0
             holiday_days = smry.get("holidayDays", 0) or 0
             paid_leave_days = smry.get("paidLeaveDays", 0) or 0
             casual_leave_days = smry.get("casualLeaveDays", 0) or 0
             sick_leave_days = smry.get("sickLeaveDays", 0) or 0
             unpaid_leave_days = smry.get("unpaidLeaveDays", 0) or 0
-            lop_days = smry.get("lopDays", 0.0) or 0.0
+            lop_days = float(smry.get("lopDays", 0.0) or 0.0)
             late_marks = smry.get("lateMarks", 0) or 0
             early_exits = smry.get("earlyExits", 0) or 0
             attendance_record_count = int(smry.get("attendanceRecordCount") or 0)
@@ -9413,11 +9419,20 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
             holiday_record_count = int(smry.get("holidayRecordCount") or 0)
             attendance_last_synced_at = str(smry.get("lastSyncedAt") or "")
             attendance_source_message = str(smry.get("sourceMessage") or "")
-            # Pro-rate net target by payable days (only meaningful with salary)
+            attendance_pct_eff = float(smry.get("attendancePercentage") or 0.0)
+            earned_mtd = float(smry.get("earnedTillNow") or 0.0)
             if net_target > 0:
-                prorate = max(0.0, float(paid_days or 0.0) / working_days)
+                prorate = max(0.0, min(1.0, earned_mtd / net_target))
+            else:
+                prorate = 0.0
+        else:
+            full_cal = int(_days_in_month)
+            working_days_slot = max(1, full_cal - 8)
+            elapsed_cal = full_cal
+            attendance_pct_eff = 0.0
 
         prorated_net = round(net_target * prorate, 2)
+        daily_rate_calendar = round(net_target / max(1, int(_days_in_month)), 2)
         pt_slab = float(structure.get("ptSlab") or 200.0)
 
         gu = _gross_up_engine(
@@ -9449,8 +9464,11 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
             "proratedNet": prorated_net,
             "monthlySalary": net_target,
             "earnedSalary": prorated_net,
-            "workingDaysInMonth": working_days,
-            "totalDaysInMonth": _days_in_month,
+            "workingDaysInMonth": working_days_slot,
+            "totalDaysInMonth": int(_days_in_month),
+            "calendarDaysInFullMonth": int(_days_in_month),
+            "elapsedCalendarDays": elapsed_cal,
+            "daysTracked": elapsed_cal,
             "sundaysInMonth": _sundays,
             "saturdaysInMonth": _saturdays,
             "presentDays": present_days,
@@ -9466,7 +9484,7 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
             "sickLeaveDays": sick_leave_days,
             "paidLeaveDays": paid_leave_days,
             "unpaidLeaveDays": unpaid_leave_days,
-            "dailyRate": round(net_target / working_days, 2),
+            "dailyRate": daily_rate_calendar,
             "lateMarks": late_marks,
             "earlyExits": early_exits,
             "overtimeHours": round(overtime_hours, 2),
@@ -9498,7 +9516,7 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
             },
             "totalDeductions": gu["totalDeductions"],
             "netSalary": prorated_net,
-            "attendancePct": round((float(paid_days or 0.0) / working_days) * 100, 1) if working_days else 0.0,
+            "attendancePct": attendance_pct_eff if _payroll_ok() else 0.0,
             "statusBreakdown": status_breakdown,
             "structure": structure,
             "warnings": [] if gu["converged"] else ["Gross-up did not converge — flagged for review"],
@@ -9510,10 +9528,10 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
     # TYPE B — CTC_BASED (Standard Forward) PATH
     # ════════════════════════════════════════════
 
-    # ── Attendance-based earned salary ──
+    # ── Attendance-based earned salary (calendar divisor; MTD earned from engine) ──
     earned_salary = 0.0
     present_days  = 0
-    working_days  = 0
+    working_days  = 1
     overtime_amt  = 0.0
     half_day_count = 0
     absent_count   = 0
@@ -9532,7 +9550,9 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
     early_exits = 0
     status_breakdown: dict = {}
     daily_rate = 0.0
-    total_days_in_month = 0
+    full_calendar_days = 0
+    elapsed_calendar_days = 0
+    days_tracked = 0
     sundays_in_month = 0
     saturdays_in_month = 0
     attendance_source = "database" if _payroll_ok() else "unavailable"
@@ -9541,14 +9561,17 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
     holiday_record_count = 0
     attendance_last_synced_at = ""
     attendance_source_message = ""
+    attendance_pct_v = 0.0
     summary = {}
 
     # Always fetch real attendance from DB regardless of salary amount
     if _payroll_ok():
         up_to_day = today.day if (year == today.year and month == today.month) else None
         summary = _payroll_calculator.get_month_summary(employee, year, month, up_to_day)
-        working_days      = summary.get("workingDaysInMonth", 0) or 1
-        total_days_in_month = summary.get("totalDaysInMonth", 0) or 0
+        full_calendar_days = int(summary.get("calendarDaysInFullMonth") or 0)
+        elapsed_calendar_days = int(summary.get("elapsedCalendarDays") or summary.get("totalDaysInMonth") or 0)
+        days_tracked = int(summary.get("daysTracked") or 0)
+        working_days      = int(summary.get("workingDaysInMonth", 0) or 1) or 1
         sundays_in_month = summary.get("sundaysInMonth", 0) or 0
         saturdays_in_month = summary.get("saturdaysInMonth", 0) or 0
         present_days      = summary.get("presentDays", 0)
@@ -9556,14 +9579,14 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
         status_breakdown  = summary.get("statusBreakdown", {})
         half_day_count    = summary.get("halfDays", 0) or status_breakdown.get("half_day", 0)
         absent_count      = summary.get("absentDays", 0) or status_breakdown.get("absent", 0)
-        paid_days         = summary.get("paidDays", 0.0) or 0.0
+        paid_days         = float(summary.get("paidDays", 0.0) or 0.0)
         weekoff_days      = summary.get("weekoffDays", 0) or 0
         holiday_days      = summary.get("holidayDays", 0) or 0
         paid_leave_days   = summary.get("paidLeaveDays", 0) or 0
         casual_leave_days = summary.get("casualLeaveDays", 0) or 0
         sick_leave_days   = summary.get("sickLeaveDays", 0) or 0
         unpaid_leave_days = summary.get("unpaidLeaveDays", 0) or 0
-        lop_days          = summary.get("lopDays", 0.0) or 0.0
+        lop_days          = float(summary.get("lopDays", 0.0) or 0.0)
         absent_deduction  = float(summary.get("absentDeduction") or 0.0)
         half_day_deduction = float(summary.get("halfDayDeduction") or 0.0)
         late_penalty      = float(summary.get("latePenalty") or 0.0)
@@ -9574,42 +9597,55 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
         holiday_record_count = int(summary.get("holidayRecordCount") or 0)
         attendance_last_synced_at = str(summary.get("lastSyncedAt") or "")
         attendance_source_message = str(summary.get("sourceMessage") or "")
-        # earnedTillNow only meaningful when salary is configured
-        if monthly_salary > 0:
-            earned_salary = float(summary.get("earnedTillNow") or 0.0)
-            daily_rate    = monthly_salary / working_days
-        else:
-            earned_salary = 0.0
-            daily_rate    = 0.0
+        attendance_pct_v = float(summary.get("attendancePercentage") or 0.0)
+        import calendar as _crefa
+
+        _, _cref_len = _crefa.monthrange(year, month)
+        full_calendar_days = max(int(_cref_len), full_calendar_days)
+        denom_cal = max(1, full_calendar_days)
+        earned_salary = float(summary.get("earnedTillNow") or 0.0)
+        daily_rate = monthly_salary / denom_cal if monthly_salary > 0 else 0.0
     else:
-        # Payroll calculator unavailable — safe fallback
-        earned_salary = monthly_salary
-        working_days  = 25
-        daily_rate    = monthly_salary / 25 if monthly_salary > 0 else 0.0
-        paid_days     = float(working_days)
+        # Payroll calculator unavailable — safe fallback (full month, no attendance carve-out)
+        import calendar as _fallback_cal
 
-    # ── Earnings breakdown (on earnedSalary) ──
-    if monthly_salary > 0:
-        earned_salary = max(0.0, round(monthly_salary - absent_deduction - half_day_deduction - late_penalty, 2))
+        _, full_calendar_days = _fallback_cal.monthrange(year, month)
+        full_calendar_days = int(full_calendar_days)
+        elapsed_calendar_days = full_calendar_days
+        days_tracked = full_calendar_days
+        working_days = max(1, full_calendar_days - 8)
+        earned_salary = monthly_salary if monthly_salary > 0 else 0.0
+        daily_rate = monthly_salary / max(1, full_calendar_days) if monthly_salary > 0 else 0.0
+        paid_days = float(full_calendar_days)
+        attendance_pct_v = 100.0 if monthly_salary > 0 else 0.0
 
-    # Support v2 canonical field names with fallback to v1
+    earned_salary = max(0.0, round(float(earned_salary), 2))
+
+    # ── Earnings breakdown (on attendance-earned MTD base) ──
     basic_pct      = float(structure.get("basicPct")       or structure.get("basicPercent")     or 50.0)
     hra_pct        = float(structure.get("hraPct")         or structure.get("hraPercent")        or 25.0)
     conveyance_pct = float(structure.get("conveyancePct")  or 0.0)
+    cca_pct        = float(structure.get("ccaPct")        or 0.0)
     bonus_pct      = float(structure.get("bonusPct")       or structure.get("bonusPercent")      or 5.0)
     medical_pct    = float(structure.get("medicalPct")     or 0.0)
     other_earn_pct = float(structure.get("otherEarningsPct") or 0.0)
     # specialPct = 100 - sum of above (auto-balance, if all v2 fields are present)
-    fixed_pct      = basic_pct + hra_pct + conveyance_pct + bonus_pct + medical_pct + other_earn_pct
+    fixed_pct      = basic_pct + hra_pct + conveyance_pct + cca_pct + bonus_pct + medical_pct + other_earn_pct
     special_pct    = max(0.0, 100.0 - fixed_pct)
     pf_pct         = float(structure.get("pfPct")         or structure.get("pfPercent")          or 12.0)
-    tds_amount     = float(structure.get("tdsAmount")     or structure.get("taxPercent", 0.0) * earned_salary / 100.0)
+    _raw_tds = structure.get("tdsAmount")
+    if _raw_tds is not None and float(_raw_tds or 0) != 0:
+        tds_amount = float(_raw_tds)
+    else:
+        _tds_pct = float(structure.get("tdsPct") or structure.get("taxPercent") or 0.0)
+        tds_amount = _tds_pct * earned_salary / 100.0
     advance_amount = float(structure.get("advanceAmount")  or 0.0)
     other_ded_amt  = float(structure.get("otherDeductionAmt") or 0.0)
 
     basic      = round(earned_salary * basic_pct      / 100, 2)
     hra        = round(earned_salary * hra_pct        / 100, 2)
     conveyance = round(earned_salary * conveyance_pct / 100, 2)
+    cca        = round(earned_salary * cca_pct       / 100, 2)
     special    = round(earned_salary * special_pct    / 100, 2)
     bonus      = round(earned_salary * bonus_pct      / 100, 2)
     medical    = round(earned_salary * medical_pct    / 100, 2)
@@ -9619,7 +9655,7 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
     manual_penalty   = float(structure.get("manualPenalty") or 0)
     manual_deduction = float(structure.get("manualDeduction") or 0)
 
-    gross = round(basic + hra + conveyance + special + bonus + medical + manual_bonus + manual_incentive + overtime_amt, 2)
+    gross = round(basic + hra + conveyance + cca + special + bonus + medical + manual_bonus + manual_incentive + overtime_amt, 2)
 
     # ── Deductions ──
     pf         = round(basic * pf_pct / 100, 2)
@@ -9637,22 +9673,38 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
     if earning_pct_total > 100:
         warnings.append(f"Earning percentages sum to {earning_pct_total:.1f}% — exceeds 100%")
 
-    # Compute Sundays and Saturdays for the month to help frontend
+    # Compute Sundays and Saturdays for the full salary month + align calendar/elapsed helpers
     from datetime import date as _date
     import calendar as _cal
-    _, _days_in_month = _cal.monthrange(year, month)
-    _sundays   = sum(1 for d in range(1, _days_in_month + 1) if _date(year, month, d).weekday() == 6)
-    _saturdays = sum(1 for d in range(1, _days_in_month + 1) if _date(year, month, d).weekday() == 5)
-    total_days_in_month = total_days_in_month or _days_in_month
-    sundays_in_month = sundays_in_month or _sundays
-    saturdays_in_month = saturdays_in_month or _saturdays
+    today_d = _today_ist_date()
+    is_mtd_view = year == today_d.year and month == today_d.month
 
+    _, _days_in_month_meta = _cal.monthrange(year, month)
+    full_calendar_days = max(full_calendar_days, int(_days_in_month_meta))
+
+    if elapsed_calendar_days <= 0:
+        elapsed_calendar_days = days_tracked or (min(today_d.day, full_calendar_days) if is_mtd_view else full_calendar_days)
+    if days_tracked <= 0:
+        days_tracked = elapsed_calendar_days
+
+    _sundays_full = sum(1 for d in range(1, full_calendar_days + 1) if _date(year, month, d).weekday() == 6)
+    _saturdays_full = sum(1 for d in range(1, full_calendar_days + 1) if _date(year, month, d).weekday() == 5)
+    sundays_in_month = sundays_in_month or _sundays_full
+    saturdays_in_month = saturdays_in_month or _saturdays_full
+
+    synced_through_day = int(elapsed_calendar_days) if elapsed_calendar_days > 0 else full_calendar_days
+    daily_rate_out = monthly_salary / max(1, full_calendar_days) if monthly_salary > 0 else 0.0
     return {
         "salaryType": "CTC_BASED",
         "monthlySalary": monthly_salary,
         "earnedSalary": round(earned_salary, 2),
+        "isMonthToDate": is_mtd_view,
+        "syncedThroughDay": synced_through_day,
         "workingDaysInMonth": working_days,
-        "totalDaysInMonth": total_days_in_month,
+        "totalDaysInMonth": full_calendar_days,
+        "calendarDaysInFullMonth": full_calendar_days,
+        "elapsedCalendarDays": elapsed_calendar_days,
+        "daysTracked": days_tracked,
         "sundaysInMonth": sundays_in_month,
         "saturdaysInMonth": saturdays_in_month,
         "presentDays": present_days,
@@ -9672,10 +9724,10 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
         "absentDeduction": round(absent_deduction, 2),
         "halfDayDeduction": round(half_day_deduction, 2),
         "latePenalty": round(late_penalty, 2),
-        "dailyRate": round(daily_rate, 2),
+        "dailyRate": round(daily_rate_out, 2),
         "lateMarks": late_marks,
         "earlyExits": early_exits,
-        "overtimeHours": round(float(summary.get("totalOvertimeHours") or 0.0), 2) if _payroll_ok() else 0.0,
+        "overtimeHours": round(float((summary or {}).get("totalOvertimeHours") or 0.0), 2) if _payroll_ok() else 0.0,
         "overtimeEarnings": round(overtime_amt, 2),
         "attendanceSource": attendance_source,
         "attendanceRecordCount": attendance_record_count,
@@ -9691,6 +9743,7 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
             "special": special,
             "bonus": bonus,
             "medical": medical,
+            "cca": cca,
             "allowance": allowance,   # legacy alias = conveyance
             "manualBonus": round(manual_bonus, 2),
             "manualIncentive": round(manual_incentive, 2),
@@ -9707,7 +9760,7 @@ def _compute_payroll_preview(employee: dict, structure: dict, year: int, month: 
         },
         "totalDeductions": total_ded,
         "netSalary": net_salary,
-        "attendancePct": round((float(paid_days or 0.0) / working_days) * 100, 1) if working_days else 0.0,
+        "attendancePct": attendance_pct_v,
         "statusBreakdown": status_breakdown,
         "structure": structure,
         "warnings": warnings,
@@ -9792,6 +9845,36 @@ def api_put_salary_structure(employee_id):
             except (TypeError, ValueError):
                 pass
 
+    _body_to_v2 = {
+        "conveyancePercent": "conveyancePct",
+        "ccaPercent": "ccaPct",
+        "medicalPercent": "medicalPct",
+        "otherAllowancePercent": "otherEarningsPct",
+        "taxPercent": "tdsPct",
+        "advanceDeduction": "advanceAmount",
+    }
+    for src, dst in _body_to_v2.items():
+        if src in body:
+            try:
+                update[dst] = float(body[src])
+            except (TypeError, ValueError):
+                pass
+    if "basicPercent" in body:
+        try:
+            update["basicPct"] = float(body["basicPercent"])
+        except (TypeError, ValueError):
+            pass
+    if "hraPercent" in body:
+        try:
+            update["hraPct"] = float(body["hraPercent"])
+        except (TypeError, ValueError):
+            pass
+    if "pfPercent" in body:
+        try:
+            update["pfPct"] = float(body["pfPercent"])
+        except (TypeError, ValueError):
+            pass
+
     # Update employee-level fields if provided (gross salary is owned by employee compensation — not from this endpoint)
     emp_updates = {}
     if "salary_type" in body:
@@ -9851,6 +9934,44 @@ def api_payroll_preview(employee_id):
                 structure[f] = float(body[f])
             except (TypeError, ValueError):
                 pass
+    # Frontend/UI aliases → v2 canonical keys (live preview)
+    _preview_aliases = {
+        "conveyancePercent": "conveyancePct",
+        "ccaPercent": "ccaPct",
+        "medicalPercent": "medicalPct",
+        "otherAllowancePercent": "otherEarningsPct",
+    }
+    for src, dst in _preview_aliases.items():
+        if src in body:
+            try:
+                structure[dst] = float(body[src])
+            except (TypeError, ValueError):
+                pass
+    if "basicPercent" in body:
+        try:
+            structure["basicPct"] = float(body["basicPercent"])
+        except (TypeError, ValueError):
+            pass
+    if "hraPercent" in body:
+        try:
+            structure["hraPct"] = float(body["hraPercent"])
+        except (TypeError, ValueError):
+            pass
+    if "pfPercent" in body:
+        try:
+            structure["pfPct"] = float(body["pfPercent"])
+        except (TypeError, ValueError):
+            pass
+    if "taxPercent" in body:
+        try:
+            structure["tdsPct"] = float(body["taxPercent"])
+        except (TypeError, ValueError):
+            pass
+    if "advanceDeduction" in body:
+        try:
+            structure["advanceAmount"] = float(body["advanceDeduction"])
+        except (TypeError, ValueError):
+            pass
     # Allow inline overrides for live preview
     emp = dict(emp)
     if "monthlySalary" in body:
@@ -10024,6 +10145,195 @@ def api_publish_employee_payslip(employee_id):
         target={"employee_id": emp_id_str, "year": year, "month": month},
     )
     return jsonify({"message": "Salary slip published to employee portal", "payslip_id": slip_id, "year": year, "month": month}), 200
+
+
+def _admin_payslip_status_response(employee_id: str):
+    """Shared JSON for GET payslip workflow status (year/month query params)."""
+    try:
+        year = int(request.args.get("year"))
+        month = int(request.args.get("month"))
+    except (TypeError, ValueError):
+        return jsonify({"status": "none"}), 200
+
+    emp_id_str = str(employee_id)
+    existing = db.payslips.find_one({"employee_id": emp_id_str, "year": year, "month": month})
+    if not existing:
+        return jsonify({"status": "none"}), 200
+
+    return jsonify({
+        "status": str(existing.get("status") or "none").strip().lower(),
+        "approved_at": existing.get("approved_at").isoformat() if isinstance(existing.get("approved_at"), datetime) else None,
+        "approved_by": existing.get("approved_by"),
+    }), 200
+
+
+def _admin_payslip_approve_core(employee_id: str):
+    """Approve payslip for period in JSON body. Returns (response, http_code)."""
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    try:
+        oid = ObjectId(employee_id)
+    except InvalidId:
+        return jsonify({"message": "Invalid employee id"}), 400
+
+    emp = db.employees.find_one({"_id": oid})
+    if not emp:
+        return jsonify({"message": "Employee not found"}), 404
+
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        year = int(body.get("year"))
+        month = int(body.get("month"))
+    except (TypeError, ValueError):
+        return jsonify({"message": "year and month are required integers"}), 400
+
+    if month < 1 or month > 12:
+        return jsonify({"message": "Invalid month"}), 400
+
+    emp_id_str = str(employee_id)
+    existing = db.payslips.find_one({"employee_id": emp_id_str, "year": year, "month": month})
+    if not existing:
+        return jsonify({"message": "No published payslip found for this period. Publish first."}), 404
+
+    now = datetime.now(timezone.utc)
+    admin_claims = getattr(g, "admin_claims", {}) or {}
+    approved_by = str(admin_claims.get("sub") or "admin")
+
+    db.payslips.update_one(
+        {"employee_id": emp_id_str, "year": year, "month": month},
+        {"$set": {
+            "status": "approved",
+            "approved_by": approved_by,
+            "approved_at": now,
+            "updated_at": now,
+        }},
+    )
+    persist_mock_db_now()
+    log_audit(
+        "api_approve_employee_payslip",
+        target={"employee_id": emp_id_str, "year": year, "month": month},
+    )
+    return jsonify({"message": "Payslip approved. Employee can now download.", "year": year, "month": month}), 200
+
+
+@app.route("/api/employees/<employee_id>/payslips/approve", methods=["POST", "OPTIONS"])
+@admin_auth_required
+@limiter.limit("60 per hour")
+def api_approve_employee_payslip(employee_id):
+    """Approve a published payslip so the employee can download it."""
+    return _admin_payslip_approve_core(employee_id)
+
+
+@app.route("/api/payroll/employee/<employee_id>/payslip-approve", methods=["POST", "OPTIONS"])
+@admin_auth_required
+@limiter.limit("60 per hour")
+def api_approve_employee_payslip_compat(employee_id):
+    """Compatibility path if upstream routing blocks /payslips/approve."""
+    return _admin_payslip_approve_core(employee_id)
+
+
+@app.route("/api/employees/<employee_id>/payslips/status", methods=["GET", "HEAD", "OPTIONS"])
+@admin_auth_required
+@limiter.limit("120 per hour")
+def api_get_payslip_status(employee_id):
+    """Get the current status of a payslip for a given employee/year/month."""
+    return _admin_payslip_status_response(employee_id)
+
+
+@app.route("/api/payroll/employee/<employee_id>/payslip-status", methods=["GET", "HEAD", "OPTIONS"])
+@admin_auth_required
+@limiter.limit("120 per hour")
+def api_get_payslip_status_compat(employee_id):
+    """Compatibility path for payslip status (some proxies return 405 on nested resource paths)."""
+    return _admin_payslip_status_response(employee_id)
+
+
+@app.route("/api/admin/payslip-workflow", methods=["GET", "POST", "HEAD", "OPTIONS"])
+def api_admin_payslip_workflow_alias():
+    """Same behaviour as GET/POST /api/payroll/payslip-admin (blueprint); alternate path for strict proxies."""
+    from src.routes.payroll import payroll_payslip_admin
+
+    return payroll_payslip_admin()
+
+
+@app.route("/api/employees/<employee_id>/payslips/history", methods=["GET", "HEAD", "OPTIONS"])
+@admin_auth_required
+@limiter.limit("120 per hour")
+def api_employee_payslips_history(employee_id):
+    """List stored payslips for an employee (admin)."""
+    emp_id_str = str(employee_id)
+    rows = list(
+        db.payslips.find({"employee_id": emp_id_str}).sort([("year", -1), ("month", -1)]).limit(48)
+    )
+    out = []
+    for row in rows:
+        item = {
+            "id": str(row.get("_id", "")),
+            "year": row.get("year"),
+            "month": row.get("month"),
+            "status": str(row.get("status") or "").strip().lower(),
+            "net_salary": row.get("net_salary"),
+            "gross_salary": row.get("gross_salary"),
+            "payslip_kind": str(row.get("payslip_kind") or "").strip().lower(),
+        }
+        for key in ("generated_at", "approved_at", "updated_at"):
+            val = row.get(key)
+            if isinstance(val, datetime):
+                item[key] = val.isoformat()
+            else:
+                item[key] = val
+        out.append(item)
+    return jsonify(out), 200
+
+
+@app.route("/api/employees/<employee_id>/payslips/revoke", methods=["POST", "OPTIONS"])
+@admin_auth_required
+@limiter.limit("60 per hour")
+def api_revoke_employee_payslip(employee_id):
+    """Remove approval so the employee cannot download until re-approved (published data kept)."""
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    try:
+        oid = ObjectId(employee_id)
+    except InvalidId:
+        return jsonify({"message": "Invalid employee id"}), 400
+
+    if not db.employees.find_one({"_id": oid}):
+        return jsonify({"message": "Employee not found"}), 404
+
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        year = int(body.get("year"))
+        month = int(body.get("month"))
+    except (TypeError, ValueError):
+        return jsonify({"message": "year and month are required integers"}), 400
+
+    if month < 1 or month > 12:
+        return jsonify({"message": "Invalid month"}), 400
+
+    emp_id_str = str(employee_id)
+    existing = db.payslips.find_one({"employee_id": emp_id_str, "year": year, "month": month})
+    if not existing:
+        return jsonify({"message": "No payslip for this period."}), 404
+
+    now = datetime.now(timezone.utc)
+    db.payslips.update_one(
+        {"employee_id": emp_id_str, "year": year, "month": month},
+        {"$set": {
+            "status": "published",
+            "approved_at": None,
+            "approved_by": None,
+            "updated_at": now,
+        }},
+    )
+    persist_mock_db_now()
+    log_audit(
+        "api_revoke_employee_payslip",
+        target={"employee_id": emp_id_str, "year": year, "month": month},
+    )
+    return jsonify({"message": "Approval revoked. Payslip remains published for editing.", "year": year, "month": month}), 200
 
 
 @app.get("/api/assets")
@@ -10910,8 +11220,12 @@ def payroll_employees():
             # Derived convenience fields
             monthly_sal = float(summary.get("monthlySalary") or 0)
             earned      = float(summary.get("earnedTillNow") or 0)
-            working_days = int(summary.get("workingDaysInMonth") or 1) or 1
-            daily_rate   = monthly_sal / working_days
+            import calendar as _pcal
+
+            _, _plen = _pcal.monthrange(year, month)
+            cal_den = max(int(_plen), int(summary.get("calendarDaysInFullMonth") or 0))
+            cal_den = max(1, cal_den)
+            daily_rate   = monthly_sal / cal_den if monthly_sal > 0 else 0.0
             summary["remainingSalary"] = round(max(0.0, monthly_sal - earned), 2)
             summary["dailyRate"]       = round(daily_rate, 2)
 
