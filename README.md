@@ -65,6 +65,23 @@ python src/api/app.py
 
 Backend runs on `http://localhost:5001` by default.
 
+### Store employee assets on Cloudinary
+
+Set these backend env variables:
+
+- `ASSETS_STORAGE=cloudinary`
+- `CLOUDINARY_CLOUD_NAME=<your_cloud_name>`
+- `CLOUDINARY_API_KEY=<your_api_key>`
+- `CLOUDINARY_API_SECRET=<your_api_secret>`
+- Optional: `CLOUDINARY_ASSETS_FOLDER=hrms-employee-assets`
+
+Install/update backend packages and restart backend:
+
+- `pip install -r requirements.txt`
+- `python src/api/app.py`
+
+If `ASSETS_STORAGE` is not `cloudinary`, backend uses local storage at `persistent/assets`.
+
 ## 3) Frontend Setup (Restored UI)
 
 ```bash

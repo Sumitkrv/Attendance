@@ -1,5 +1,40 @@
 import { BASE_URL, API_CONNECTION_ERROR_MESSAGE } from './config/apiConfig'
 
+function formatHostForUrl(hostname) {
+  const value = String(hostname || '').trim()
+  if (!value) return '127.0.0.1'
+  if (value === '0.0.0.0' || value === '::' || value === '[::]') return '127.0.0.1'
+  if (value.includes(':') && !value.startsWith('[')) return `[${value}]`
+  return value
+}
+
+function normalizeApiBase(value) {
+  const raw = String(value || '').trim().replace(/\/+$/, '')
+  const host = typeof window !== 'undefined' && window?.location?.hostname
+    ? formatHostForUrl(window.location.hostname)
+    : '127.0.0.1'
+
+  if (!raw) return `http://${host}:5001`
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw)
+      if (!parsed.hostname || parsed.hostname === ':') return `http://${host}:5001`
+      return raw
+    } catch {
+      return `http://${host}:5001`
+    }
+  }
+  if (raw.startsWith(':')) return `http://${host}${raw}`
+  if (/^\d+$/.test(raw)) return `http://${host}:${raw}`
+  if (/^(localhost|127\.0\.0\.1|\d+\.\d+\.\d+\.\d+|\[[^\]]+\]|[a-z0-9.-]+):(\d+)$/i.test(raw)) return `http://${raw}`
+  if (/^\//.test(raw)) return `http://${host}:5001`
+  return raw
+}
+
+function getApiBaseUrl() {
+  return normalizeApiBase(BASE_URL)
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -14,17 +49,56 @@ function buildUnreachableServerMessage() {
   return API_CONNECTION_ERROR_MESSAGE
 }
 
-function readLatestStoredToken() {
+function readLatestStoredToken(path = '') {
   try {
     if (typeof window === 'undefined' || !window.localStorage) return ''
-    return localStorage.getItem('fa_user_token') || localStorage.getItem('fa_admin_token') || ''
+    const normalizedPath = String(path || '').trim().toLowerCase()
+    const userToken = localStorage.getItem('fa_user_token') || ''
+    const adminToken = localStorage.getItem('fa_admin_token') || ''
+
+    const looksLikeUserEndpoint = normalizedPath.startsWith('/user')
+      || normalizedPath.startsWith('/tasks')
+      || normalizedPath.startsWith('/scan_attendance')
+      || normalizedPath.startsWith('/scan_challenge')
+      || normalizedPath.startsWith('/manual_attendance_request')
+      || normalizedPath.startsWith('/auth/refresh_user')
+
+    if (looksLikeUserEndpoint) return userToken || adminToken || ''
+    return adminToken || userToken || ''
   } catch {
     return ''
   }
 }
 
+const MAX_CONCURRENT_REQUESTS = 5
+let activeRequestsCount = 0
+const requestQueue = []
+
+function processRequestQueue() {
+  if (activeRequestsCount >= MAX_CONCURRENT_REQUESTS || requestQueue.length === 0) return
+  activeRequestsCount++
+  const { run, resolve, reject } = requestQueue.shift()
+  
+  run()
+    .then(resolve)
+    .catch(reject)
+    .finally(() => {
+      activeRequestsCount--
+      processRequestQueue()
+    })
+}
+
+function enqueueApiRequest(run) {
+  return new Promise((resolve, reject) => {
+    requestQueue.push({ run, resolve, reject })
+    processRequestQueue()
+  })
+}
+
 export async function apiFetch(path, options = {}, token) {
-  if (!BASE_URL) {
+  return enqueueApiRequest(async () => {
+    const apiBaseUrl = getApiBaseUrl()
+  if (!apiBaseUrl) {
     throw makeApiError(API_CONNECTION_ERROR_MESSAGE, {
       retryable: false,
       status: 0,
@@ -35,7 +109,8 @@ export async function apiFetch(path, options = {}, token) {
   const timeoutMs = Number(options.timeoutMs || 15000)
   const retries = Number(options.retries ?? ((options.method || 'GET').toUpperCase() === 'GET' ? 1 : 0))
   const retryDelayMs = Number(options.retryDelayMs || 450)
-  const effectiveToken = token || readLatestStoredToken()
+  const endpoint = String(path || '').startsWith('/') ? String(path || '') : `/${path}`
+  const effectiveToken = token || readLatestStoredToken(endpoint)
   const headers = {
     ...(options.headers || {}),
   }
@@ -61,8 +136,7 @@ export async function apiFetch(path, options = {}, token) {
 
     let response
     try {
-      const endpoint = String(path || '').startsWith('/') ? path : `/${path}`
-      response = await fetch(`${BASE_URL}${endpoint}`, {
+      response = await fetch(`${apiBaseUrl}${endpoint}`, {
         ...requestOptions,
         signal: controller.signal,
       })
@@ -100,7 +174,8 @@ export async function apiFetch(path, options = {}, token) {
     }
 
     if (!response.ok) {
-      const retryable = response.status === 429 || response.status >= 500
+      // Retrying 429 immediately multiplies traffic and deepens rate-limit storms
+      const retryable = response.status >= 500
       lastErr = makeApiError(
         data.message || `Request failed: ${response.status}`,
         {
@@ -122,4 +197,5 @@ export async function apiFetch(path, options = {}, token) {
   }
 
   throw lastErr || makeApiError('Unknown API error', { retryable: false, status: 0, code: 'unknown' })
+  })
 }

@@ -1,0 +1,844 @@
+/* Add Employee Onboarding — enterprise HRMS layout */
+
+.aeo-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 28px;
+  align-items: start;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.aeo-main {
+  background: var(--surface-0, #fff);
+  border-radius: 16px;
+  padding: 24px 26px 20px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+
+.aeo-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.aeo-kicker {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted, #64748b);
+  margin: 0 0 4px;
+}
+
+.aeo-title {
+  margin: 0;
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary, #0f172a);
+}
+
+.aeo-sub {
+  margin: 6px 0 0;
+  font-size: 0.88rem;
+  color: var(--text-secondary, #475569);
+  max-width: 52ch;
+  line-height: 1.45;
+}
+
+.aeo-header-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aeo-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 16px;
+  border-radius: 10px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.aeo-btn.ghost {
+  background: var(--surface-2, #f1f5f9);
+  border-color: var(--border-1, #e2e8f0);
+  color: var(--text-secondary, #475569);
+}
+
+.aeo-btn.ghost:hover:not(:disabled) {
+  background: #e2e8f0;
+}
+
+.aeo-btn.secondary {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #4338ca;
+}
+
+.aeo-btn.primary {
+  background: linear-gradient(135deg, #0d9488 0%, #059669 100%);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 2px 8px rgba(13, 148, 136, 0.25);
+}
+
+.aeo-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.03);
+}
+
+.aeo-btn.sm {
+  padding: 6px 10px;
+  font-size: 0.78rem;
+}
+
+.aeo-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.aeo-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 22px;
+}
+
+.aeo-step-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-1, #e2e8f0);
+  background: var(--surface-1, #f8fafc);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary, #475569);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.aeo-step-pill:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.aeo-step-pill.active {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.aeo-step-pill.done:not(.active) {
+  color: #059669;
+  border-color: #bbf7d0;
+}
+
+.aeo-step-num {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.aeo-step-pill.active .aeo-step-num {
+  background: #14b8a6;
+  color: #fff;
+}
+
+.aeo-banner {
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 0.84rem;
+  margin-bottom: 14px;
+}
+
+.aeo-banner.ok {
+  background: #ecfdf5;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.aeo-banner.err {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.aeo-panel {
+  margin-bottom: 8px;
+}
+
+.aeo-section-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 18px;
+  color: #0f172a;
+}
+
+.aeo-section-head svg {
+  margin-top: 2px;
+  color: #64748b;
+}
+
+.aeo-section-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.aeo-section-desc {
+  margin: 4px 0 0;
+  font-size: 0.84rem;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.aeo-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 18px;
+}
+
+.aeo-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aeo-field.span-2 {
+  grid-column: span 2;
+}
+
+.aeo-field.flex-center {
+  justify-content: center;
+}
+
+.aeo-label {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #475569;
+  letter-spacing: 0.01em;
+}
+
+.aeo-label.tight {
+  margin: 0;
+}
+
+.aeo-input,
+.aeo-textarea {
+  width: 100%;
+  padding: 8px 11px;
+  font-size: 0.86rem;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #fafbfc;
+  color: #0f172a;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.aeo-input:hover,
+.aeo-textarea:hover {
+  border-color: #cbd5e1;
+}
+
+.aeo-input:focus,
+.aeo-textarea:focus {
+  outline: none;
+  border-color: #5eead4;
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.12);
+  background: #fff;
+}
+
+.aeo-input.hero {
+  font-size: 1.25rem;
+  font-weight: 700;
+  padding: 10px 12px;
+  letter-spacing: -0.02em;
+}
+
+.aeo-input.small {
+  font-size: 0.82rem;
+  padding: 7px 9px;
+}
+
+.aeo-input.invalid {
+  border-color: #f87171;
+}
+
+.aeo-input.mono {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.aeo-textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+
+.aeo-hint {
+  margin: 0;
+  font-size: 0.74rem;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+.aeo-err {
+  margin: 0;
+  font-size: 0.74rem;
+  color: #dc2626;
+}
+
+.aeo-inline-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aeo-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #2563eb;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.aeo-link-btn.danger {
+  color: #dc2626;
+}
+
+.aeo-mini-panel {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.aeo-mini-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.aeo-mini-row .grow {
+  flex: 1;
+}
+
+.aeo-mini-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 140px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aeo-mini-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.8rem;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+}
+
+.aeo-org-card {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border: 1px solid #e2e8f0;
+  border-left-width: 4px;
+  margin-bottom: 18px;
+}
+
+.aeo-org-card svg {
+  color: #64748b;
+  flex-shrink: 0;
+}
+
+.aeo-org-label {
+  margin: 0;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.aeo-org-title {
+  margin: 4px 0 2px;
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.aeo-org-meta {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.aeo-adv-wrap {
+  margin-top: 18px;
+}
+
+.aeo-adv-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed #cbd5e1;
+  background: #fafafa;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.aeo-adv-sub {
+  margin-left: auto;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+.aeo-adv-panel {
+  margin-top: 10px;
+  padding: 12px 0 0;
+}
+
+.aeo-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.84rem;
+  color: #334155;
+  cursor: pointer;
+}
+
+.aeo-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: #0d9488;
+}
+
+.aeo-photo-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.aeo-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  background: #f1f5f9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+}
+
+.aeo-avatar.sm {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+}
+
+.aeo-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.aeo-photo-actions {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 200px;
+}
+
+.aeo-file-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  width: fit-content;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+/* Compensation */
+.aeo-pay-card {
+  padding: 4px 2px 2px;
+}
+
+.aeo-pay-eyebrow {
+  margin: 0 0 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #64748b;
+}
+
+.aeo-salary-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.aeo-salary-card {
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  background: #fafafa;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.aeo-salary-card:hover {
+  border-color: #cbd5e1;
+}
+
+.aeo-salary-card.on {
+  border-color: #99f6e4;
+  background: linear-gradient(145deg, #f0fdfa 0%, #ecfeff 100%);
+  box-shadow: 0 4px 14px rgba(13, 148, 136, 0.08);
+}
+
+.aeo-sc-title {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.aeo-sc-desc {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.74rem;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+.aeo-salary-card.on .aeo-sc-desc {
+  color: #0f766e;
+}
+
+.aeo-pay-hero {
+  margin-bottom: 4px;
+}
+
+.aeo-inr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #0f766e;
+}
+
+.aeo-inr .aeo-input {
+  border-radius: 12px;
+}
+
+.aeo-preview {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.aeo-preview-title {
+  margin: 0 0 12px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+
+.aeo-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 16px;
+}
+
+.aeo-preview-grid .span-row {
+  grid-column: span 2;
+}
+
+.aeo-pv-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.aeo-pv-val {
+  display: block;
+  margin-top: 2px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.aeo-pv-note {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 0.82rem;
+  color: #334155;
+  font-weight: 600;
+}
+
+.aeo-preview-foot {
+  margin: 10px 0 0;
+  font-size: 0.74rem;
+  color: #64748b;
+}
+
+.aeo-sync-note {
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+  font-size: 0.76rem;
+  color: #64748b;
+  line-height: 1.45;
+}
+
+.aeo-bank-banner {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0 !important;
+}
+
+.aeo-bank-label {
+  margin: 0;
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: #0f172a;
+}
+
+.aeo-bank-sub {
+  margin: 2px 0 0;
+  font-size: 0.76rem;
+  color: #64748b;
+}
+
+.aeo-pass-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.aeo-pass-row .aeo-input {
+  flex: 1;
+  min-width: 180px;
+}
+
+.aeo-footnote {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  font-size: 0.8rem;
+  color: #64748b;
+  line-height: 1.45;
+}
+
+.aeo-footnote svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #94a3b8;
+}
+
+.aeo-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid #f1f5f9;
+}
+
+/* Sticky summary */
+.aeo-side {
+  position: sticky;
+  top: 96px;
+}
+
+.aeo-side-card {
+  padding: 18px 18px 16px;
+  border-radius: 16px;
+  background: #fff;
+  border: 1px solid #e8edf2;
+  box-shadow: 0 10px 40px rgba(15, 23, 42, 0.06);
+}
+
+.aeo-side-kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.aeo-side-name {
+  margin: 6px 0 14px;
+  font-size: 1.08rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+  line-height: 1.2;
+}
+
+.aeo-side-dl {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.aeo-side-dl div {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 6px 10px;
+  align-items: baseline;
+}
+
+.aeo-side-dl dt {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+}
+
+.aeo-side-dl dd {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #334155;
+  text-align: right;
+}
+
+.aeo-em {
+  font-size: 0.95rem !important;
+  font-weight: 800 !important;
+  color: #0f172a !important;
+}
+
+.aeo-micro {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-left: 4px;
+}
+
+@media (max-width: 1100px) {
+  .aeo-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .aeo-side {
+    position: relative;
+    top: 0;
+    order: -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .aeo-grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .aeo-field.span-2 {
+    grid-column: span 1;
+  }
+
+  .aeo-salary-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .aeo-preview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .aeo-preview-grid .span-row {
+    grid-column: span 1;
+  }
+}

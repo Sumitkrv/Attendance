@@ -1,4 +1,6 @@
-#!/Users/sumitthakur/Desktop/Attendance/face-attendance-system/backend/.venv/bin/python
+#!/bin/sh
+'''exec' "/Users/sumitthakur/Desktop/FINAL file./backend/.venv/bin/python" "$0" "$@"
+' '''
 import sys
 from markdown_it.cli.parse import main
 if __name__ == '__main__':

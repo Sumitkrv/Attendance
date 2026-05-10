@@ -1,0 +1,227 @@
+.employee-support-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.employee-support-helpdesk-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.1fr;
+  gap: 12px;
+}
+
+.employee-support-form-card,
+.employee-support-history-card,
+.employee-support-policy-toolbar,
+.employee-support-policy-card,
+.employee-support-chat-card {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 14px;
+}
+
+.employee-support-form-card h3,
+.employee-support-history-card h3 {
+  margin: 0;
+}
+
+.employee-support-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.employee-support-form-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.employee-support-form-grid label span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.employee-support-full-row {
+  grid-column: 1 / -1;
+}
+
+.employee-support-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.employee-support-table-wrap {
+  overflow: auto;
+}
+
+.employee-support-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 880px;
+}
+
+.employee-support-table th,
+.employee-support-table td {
+  text-align: left;
+  padding: 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  font-size: 13px;
+}
+
+.employee-support-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.28px;
+}
+
+.employee-support-policy-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 10px;
+  padding: 0 10px;
+  min-width: 320px;
+  background: #fff;
+}
+
+.employee-support-policy-search input {
+  border: none;
+  outline: none;
+  min-height: 34px;
+  min-width: 260px;
+  background: transparent;
+}
+
+.employee-support-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.employee-support-policy-card h4 {
+  margin: 0;
+}
+
+.employee-support-policy-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.employee-support-policy-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.employee-support-chat-card {
+  display: grid;
+  gap: 10px;
+}
+
+.employee-support-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.employee-support-chat-head h3 {
+  margin: 0;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.employee-support-chat-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.employee-support-chat-tabs button {
+  min-height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: #fff;
+  color: #334155;
+}
+
+.employee-support-chat-tabs button.active {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #3730a3;
+}
+
+.employee-support-chat-body {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  padding: 10px;
+  max-height: 220px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+}
+
+.employee-support-chat-msg {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  max-width: 80%;
+}
+
+.employee-support-chat-msg.by-support {
+  background: #f1f5f9;
+  color: #334155;
+  justify-self: start;
+}
+
+.employee-support-chat-msg.by-employee {
+  background: #e0e7ff;
+  color: #3730a3;
+  justify-self: end;
+}
+
+.employee-support-chat-input {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+@media (max-width: 1400px) {
+  .employee-support-helpdesk-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .employee-support-form-grid,
+  .employee-support-policy-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .employee-support-policy-search {
+    min-width: 100%;
+  }
+}
+
+:root.dark-mode .employee-support-form-card,
+:root.dark-mode .employee-support-history-card,
+:root.dark-mode .employee-support-policy-toolbar,
+:root.dark-mode .employee-support-policy-card,
+:root.dark-mode .employee-support-chat-card,
+:root.dark-mode .employee-support-chat-body {
+  background: #0f172a;
+  border-color: rgba(148, 163, 184, 0.28);
+}
+
+:root.dark-mode .employee-support-table th {
+  background: #111827;
+  color: #cbd5e1;
+}

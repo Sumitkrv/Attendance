@@ -1,4 +1,6 @@
-#!/Users/sumitthakur/Downloads/Attendance-main/backend/.venv/bin/python
+#!/bin/sh
+'''exec' "/Users/sumitthakur/Desktop/FINAL file./backend/.venv/bin/python" "$0" "$@"
+' '''
 import sys
 from email_validator.__main__ import main
 if __name__ == '__main__':

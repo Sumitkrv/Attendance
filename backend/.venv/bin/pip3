@@ -1,4 +1,6 @@
-#!/Users/sumitthakur/Desktop/Attendance/face-attendance-system/backend/.venv/bin/python
+#!/bin/sh
+'''exec' "/Users/sumitthakur/Desktop/FINAL file./backend/.venv/bin/python" "$0" "$@"
+' '''
 # -*- coding: utf-8 -*-
 import re
 import sys

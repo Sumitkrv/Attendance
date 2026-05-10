@@ -1,0 +1,343 @@
+.employee-profile-shell {
+  display: grid;
+  gap: 16px;
+}
+
+.employee-profile-summary {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.07);
+}
+
+.employee-profile-avatar-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.employee-profile-avatar {
+  width: 76px;
+  height: 76px;
+  border-radius: 22px;
+  object-fit: cover;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.employee-profile-avatar-fallback {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(140deg, #4f46e5 0%, #6366f1 45%, #06b6d4 100%);
+  color: #ffffff;
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.employee-profile-summary-main h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.employee-profile-summary-main .muted {
+  margin: 4px 0 0;
+}
+
+.employee-profile-summary-tags {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.employee-profile-avatar-actions {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.employee-profile-action-btn,
+.employee-doc-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #4f46e5;
+  color: #ffffff;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.employee-profile-action-btn:hover,
+.employee-doc-btn:hover {
+  background: #4338ca;
+}
+
+.employee-profile-action-btn input,
+.employee-doc-btn input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.employee-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.employee-profile-card {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+}
+
+.employee-profile-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.employee-profile-card-title h4 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.employee-profile-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.employee-profile-fields-grid label,
+.employee-security-card label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.employee-profile-fields-grid label span,
+.employee-security-card label span {
+  font-weight: 600;
+}
+
+.employee-profile-fields-grid input,
+.employee-profile-fields-grid textarea,
+.employee-security-card input,
+.employee-security-card select {
+  width: 100%;
+}
+
+.employee-profile-full-row {
+  grid-column: 1 / -1;
+}
+
+.employee-profile-card-actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.employee-doc-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.employee-doc-card {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  padding: 12px;
+  background: #fbfdff;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.employee-doc-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+}
+
+.employee-doc-card h5 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.employee-doc-meta {
+  display: grid;
+  gap: 4px;
+}
+
+.employee-doc-meta p,
+.employee-security-last-login p {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.employee-doc-meta p span,
+.employee-security-last-login p span {
+  color: #64748b;
+}
+
+.employee-doc-actions {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.employee-security-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.employee-security-card {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  background: #fcfdff;
+}
+
+.employee-security-card h5 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.employee-security-span-2 {
+  grid-column: 1 / -1;
+}
+
+.employee-security-toggle {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px !important;
+}
+
+.employee-security-table-wrap {
+  overflow: auto;
+}
+
+.employee-security-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 520px;
+}
+
+.employee-security-table th,
+.employee-security-table td {
+  text-align: left;
+  padding: 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.employee-security-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+
+.employee-timeline-list {
+  display: grid;
+  gap: 8px;
+}
+
+.employee-timeline-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.employee-timeline-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(140deg, #4f46e5, #06b6d4);
+}
+
+.employee-timeline-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.employee-doc-preview-modal {
+  width: min(840px, 92vw);
+}
+
+.employee-doc-preview-image,
+.employee-doc-preview-frame {
+  width: 100%;
+  max-height: 70vh;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  object-fit: contain;
+  background: #ffffff;
+}
+
+.employee-doc-preview-frame {
+  height: 70vh;
+}
+
+@media (max-width: 1180px) {
+  .employee-doc-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 960px) {
+  .employee-profile-summary {
+    grid-template-columns: 1fr;
+    justify-items: start;
+  }
+
+  .employee-profile-avatar-actions {
+    justify-items: start;
+  }
+
+  .employee-profile-grid,
+  .employee-security-grid,
+  .employee-profile-fields-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .employee-doc-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+:root.dark-mode .employee-profile-card,
+:root.dark-mode .employee-profile-summary,
+:root.dark-mode .employee-doc-card,
+:root.dark-mode .employee-security-card,
+:root.dark-mode .employee-timeline-item {
+  background: #0f172a;
+  border-color: rgba(148, 163, 184, 0.26);
+}
+
+:root.dark-mode .employee-security-table th {
+  background: #111827;
+  color: #cbd5e1;
+}

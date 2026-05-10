@@ -25,6 +25,7 @@ def create_app() -> FastAPI:
         return {"success": True, "message": "API healthy"}
 
     app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+    app.include_router(api_router)
     return app
 
 

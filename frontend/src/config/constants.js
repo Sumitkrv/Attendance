@@ -1,0 +1,24 @@
+export const ADMIN_KEY = 'fa_admin_token'
+export const USER_KEY = 'fa_user_token'
+export const USER_ATTENDANCE_CACHE_KEY = 'fa_user_attendance_cache'
+export const UI_THEME_KEY = 'fa_ui_theme'
+export const TASK_SYNC_EVENT_KEY = 'fa_task_sync_event'
+export const TASK_SYNC_LOCAL_EVENT = 'fa_task_sync_local_event'
+export const SESSION_REFRESH_CHECK_MS = 60 * 1000
+export const SESSION_REFRESH_BEFORE_MS = 15 * 60 * 1000
+export const SESSION_EXPIRING_SOON_MS = 5 * 60 * 1000
+export const GEO_TIMEOUT_MS = 10000
+export const GEO_MAX_AGE_MS = 0
+export const GEO_RETRY_COUNT = 1
+export const APP_TIME_ZONE = 'Asia/Kolkata'
+export const COMPLETED_VISIBLE_MS = 5 * 60 * 1000
+export const PASSWORD_MIN_LENGTH = 6
+export const BRAND_NAME = 'PRHR'
+export const BRAND_LOGO_SRC = '/logo.png'
+export const DASHBOARD_V2_ENABLED = String(import.meta.env.VITE_FEATURE_DASHBOARD_V2 || '1') !== '0'
+export const DASHBOARD_AUTO_REFRESH_SECONDS = Number(import.meta.env.VITE_DASHBOARD_AUTO_REFRESH_SECONDS || 45)
+export const AUTO_ABSENT_CUTOFF_HOUR = Number(import.meta.env.VITE_AUTO_ABSENT_CUTOFF_HOUR || 10)
+export const ATTENDANCE_POLICY_STORAGE_KEY = 'fa_attendance_policy'
+export const ASSET_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+export const ASSET_ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.mp4', '.pdf', '.docx']
+export const ASSET_INPUT_ACCEPT = '.jpg,.jpeg,.png,.mp4,.pdf,.docx'

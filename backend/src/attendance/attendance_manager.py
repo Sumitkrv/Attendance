@@ -231,6 +231,13 @@ class AttendanceManager:
         return inserted
 
     def mark_attendance(self, employee_name: str, source: str = "auto", reference_at: Optional[datetime] = None) -> dict:
+        employee = self.get_employee_by_name(employee_name)
+        if not employee:
+            return {"status": "error", "message": f"Employee '{employee_name}' not found"}
+
+        if not self._is_employee_active(employee):
+            return {"status": "error", "message": f"Employee '{employee_name}' is inactive"}
+
         now_utc = utc_now()
         effective_utc = _coerce_datetime(reference_at) if source == "manual" else None
         if effective_utc is None:
@@ -527,14 +534,29 @@ class AttendanceManager:
             "message": "Exit marked successfully",
         }
 
-    def mark_leave(self, employee_name: str, source: str = "employee") -> dict:
-        employee = self.get_employee_by_name(employee_name)
+    def mark_leave_for_employee(self, employee_id: str, source: str = "employee", date: Optional[str] = None) -> dict:
+        try:
+            employee_oid = ObjectId(str(employee_id))
+        except Exception:
+            return {"status": "error", "message": "Invalid employee id"}
+
+        employee = self.employees.find_one({"_id": employee_oid})
         if not employee:
-            return {"status": "error", "message": f"Employee '{employee_name}' not found"}
+            return {"status": "error", "message": "Employee not found"}
+
+        employee_name = str(employee.get("name") or "").strip()
+        if not employee_name:
+            return {"status": "error", "message": "Employee name missing"}
 
         now_utc = utc_now()
-        now_ist = now_utc.astimezone(IST_TZ)
-        date_str = now_ist.strftime("%Y-%m-%d")
+        if str(date or "").strip():
+            try:
+                date_str = datetime.strptime(str(date).strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+            except ValueError:
+                return {"status": "error", "message": "Invalid date format. Use YYYY-MM-DD"}
+        else:
+            now_ist = now_utc.astimezone(IST_TZ)
+            date_str = now_ist.strftime("%Y-%m-%d")
 
         record = self.attendance.find_one({"employee_id": employee["_id"], "date": date_str})
         if not record:
@@ -564,6 +586,7 @@ class AttendanceManager:
                 "status": "leave_marked",
                 "timing_status": "On Leave",
                 "employee_name": employee_name,
+                "employee_id": str(employee.get("_id")),
                 "date": date_str,
                 "check_in": None,
                 "check_in_at": None,
@@ -581,6 +604,7 @@ class AttendanceManager:
                 "status": "already_on_leave",
                 "timing_status": "On Leave",
                 "employee_name": employee_name,
+                "employee_id": str(employee.get("_id")),
                 "date": date_str,
                 "check_in": times.get("check_in"),
                 "check_in_at": times.get("check_in_at"),
@@ -617,6 +641,7 @@ class AttendanceManager:
                 "status": "leave_marked",
                 "timing_status": "On Leave",
                 "employee_name": employee_name,
+                "employee_id": str(employee.get("_id")),
                 "date": date_str,
                 "check_in": None,
                 "check_in_at": None,
@@ -634,6 +659,7 @@ class AttendanceManager:
         return {
             "status": "attendance_exists",
             "employee_name": employee_name,
+            "employee_id": str(employee.get("_id")),
             "date": date_str,
             "current_status": derived_status,
             "timing_status": record.get("timing_status") or record.get("exit_status") or record.get("entry_status"),
@@ -643,6 +669,12 @@ class AttendanceManager:
             "check_out_at": times.get("check_out_at"),
             "message": "Attendance already marked for today. Leave cannot be marked now",
         }
+
+    def mark_leave(self, employee_name: str, source: str = "employee") -> dict:
+        employee = self.get_employee_by_name(employee_name)
+        if not employee:
+            return {"status": "error", "message": f"Employee '{employee_name}' not found"}
+        return self.mark_leave_for_employee(str(employee.get("_id")), source=source)
 
     def list_attendance(self, date: Optional[str] = None) -> list:
         if date:
@@ -716,3 +748,269 @@ class AttendanceManager:
         self.attendance.delete_many({"employee_id": employee["_id"]})
         self._notify_change()
         return {"status": "ok", "employee_name": employee.get("name", "unknown")}
+
+    # ─── Shift-Aware Attendance Logic ───────────────────────────────────
+
+    def _get_employee_shift(self, employee: dict) -> dict:
+        """Get the shift configuration for an employee.
+
+        Uses the employee's work_policy first, falls back to shift_assignments,
+        then to the system default shift.
+        """
+        work_policy = employee.get("work_policy") or {}
+        shift_start = work_policy.get("shiftStart", "09:00")
+        shift_end = work_policy.get("shiftEnd", "18:00")
+        grace_minutes = int(work_policy.get("graceMinutes", 15))
+        overtime_eligible = bool(work_policy.get("overtimeEligible", True))
+        break_minutes = int(work_policy.get("breakMinutes", 60))
+        min_hours = float(work_policy.get("minHours", 8))
+
+        return {
+            "start": shift_start,
+            "end": shift_end,
+            "grace_minutes": grace_minutes,
+            "overtime_eligible": overtime_eligible,
+            "break_minutes": break_minutes,
+            "min_hours": min_hours,
+            "half_day_threshold": min_hours / 2,
+        }
+
+    def _parse_time_minutes(self, time_str: Optional[str]) -> Optional[int]:
+        """Parse HH:MM:SS or HH:MM to total minutes since midnight."""
+        if not time_str:
+            return None
+        parts = str(time_str).strip().split(":")
+        if len(parts) < 2:
+            return None
+        try:
+            h, m = int(parts[0]), int(parts[1])
+            return h * 60 + m
+        except (ValueError, TypeError):
+            return None
+
+    def _time_str_to_minutes(self, time_str: str) -> int:
+        """Convert HH:MM format to minutes since midnight."""
+        parts = time_str.split(":")
+        return int(parts[0]) * 60 + int(parts[1])
+
+    def calculate_work_hours(self, row: dict, employee: Optional[dict] = None) -> dict:
+        """Calculate detailed work metrics for an attendance record.
+
+        Returns:
+            dict with: worked_minutes, break_minutes, overtime_minutes,
+                       late_minutes, early_exit_minutes, net_work_hours,
+                       status (present/half_day/absent/late/early_exit/overtime)
+        """
+        check_in = row.get("check_in")
+        check_out = row.get("check_out")
+
+        in_mins = self._parse_time_minutes(check_in)
+        out_mins = self._parse_time_minutes(check_out)
+
+        shift = self._get_employee_shift(employee or {})
+        shift_start_mins = self._time_str_to_minutes(shift["start"])
+        shift_end_mins = self._time_str_to_minutes(shift["end"])
+        grace = shift["grace_minutes"]
+
+        result = {
+            "worked_minutes": 0,
+            "break_duration": shift["break_minutes"],
+            "overtime_minutes": 0,
+            "late_minutes": 0,
+            "early_exit_minutes": 0,
+            "net_work_hours": 0.0,
+            "shift_label": f'{shift["start"]} - {shift["end"]}',
+            "shift_hours": shift["min_hours"],
+            "is_late": False,
+            "is_early_exit": False,
+            "is_overtime": False,
+            "is_half_day": False,
+            "is_present": False,
+            "is_absent": True,
+            "status": "absent",
+        }
+
+        if in_mins is None:
+            return result
+
+        # Has check-in at minimum
+        result["is_absent"] = False
+
+        # Calculate late
+        late_threshold = shift_start_mins + grace
+        if in_mins > late_threshold:
+            result["late_minutes"] = in_mins - shift_start_mins
+            result["is_late"] = True
+
+        if out_mins is None:
+            result["is_present"] = True
+            result["status"] = "checked_in"
+            return result
+
+        # Calculate worked minutes
+        worked = out_mins - in_mins
+        if worked < 0:
+            worked += 24 * 60  # overnight shift
+
+        result["worked_minutes"] = worked
+        result["net_work_hours"] = round(max(0, worked - shift["break_minutes"]) / 60, 2)
+
+        # Calculate early exit
+        if out_mins < shift_end_mins:
+            result["early_exit_minutes"] = shift_end_mins - out_mins
+            result["is_early_exit"] = True
+
+        # Calculate overtime
+        shift_duration = shift_end_mins - shift_start_mins
+        if shift_duration < 0:
+            shift_duration += 24 * 60
+        if worked > shift_duration and shift["overtime_eligible"]:
+            result["overtime_minutes"] = worked - shift_duration
+            result["is_overtime"] = True
+
+        # Determine status
+        net_hours = result["net_work_hours"]
+        if net_hours >= shift["min_hours"]:
+            result["is_present"] = True
+            result["status"] = "present"
+        elif net_hours >= shift["half_day_threshold"]:
+            result["is_half_day"] = True
+            result["is_present"] = True
+            result["status"] = "half_day"
+        else:
+            result["is_present"] = True
+            result["status"] = "short_day"
+
+        if result["is_late"]:
+            result["status"] = "late" if result["status"] == "present" else f'{result["status"]}_late'
+
+        return result
+
+    def get_attendance_summary(self, date_str: str) -> dict:
+        """Get a real-time attendance summary for the dashboard.
+
+        Returns counts and aggregates suitable for the live dashboard:
+        present, absent, late, leave, half_day, overtime_hours,
+        total_work_hours, active_count, attendance_percent.
+        """
+        rows = self.list_attendance(date_str)
+        all_active = list(self.employees.find(
+            {"$or": [{"status": {"$ne": "inactive"}}, {"status": {"$exists": False}}]},
+            {"_id": 1, "name": 1, "work_policy": 1}
+        ))
+        emp_by_id = {str(e["_id"]): e for e in all_active}
+        total_active = len(all_active)
+
+        summary = {
+            "total_employees": total_active,
+            "present": 0,
+            "absent": 0,
+            "late": 0,
+            "on_leave": 0,
+            "half_day": 0,
+            "checked_in": 0,  # currently working
+            "checked_out": 0,
+            "total_work_minutes": 0,
+            "total_overtime_minutes": 0,
+            "total_late_minutes": 0,
+            "total_early_exit_minutes": 0,
+            "attendance_percent": 0,
+            "date": date_str,
+        }
+
+        for row in rows:
+            status = str(row.get("status", "")).lower()
+            emp = emp_by_id.get(str(row.get("employee_id", "")))
+            metrics = self.calculate_work_hours(row, emp)
+
+            if status in ("leave", "leave_marked") or row.get("leave_marked"):
+                summary["on_leave"] += 1
+            elif status == "absent" or row.get("auto_absent"):
+                summary["absent"] += 1
+            else:
+                summary["present"] += 1
+                if metrics["is_late"]:
+                    summary["late"] += 1
+                if metrics["is_half_day"]:
+                    summary["half_day"] += 1
+                if row.get("check_in") and not row.get("check_out"):
+                    summary["checked_in"] += 1
+                if row.get("check_out"):
+                    summary["checked_out"] += 1
+
+            summary["total_work_minutes"] += metrics["worked_minutes"]
+            summary["total_overtime_minutes"] += metrics["overtime_minutes"]
+            summary["total_late_minutes"] += metrics["late_minutes"]
+            summary["total_early_exit_minutes"] += metrics["early_exit_minutes"]
+
+        if total_active > 0:
+            summary["attendance_percent"] = round(
+                (summary["present"] + summary["on_leave"]) / total_active * 100, 1
+            )
+
+        return summary
+
+    def log_break_event(self, employee_name: str, event_type: str = "break_start") -> dict:
+        """Log a break event (break_start or break_end) for today's attendance.
+
+        Stores break events as a list within the attendance record.
+        """
+        employee = self.get_employee_by_name(employee_name)
+        if not employee:
+            return {"status": "error", "message": f"Employee '{employee_name}' not found"}
+
+        now_utc = utc_now()
+        now_ist = now_utc.astimezone(IST_TZ)
+        date_str = now_ist.strftime("%Y-%m-%d")
+        time_str = now_ist.strftime("%H:%M:%S")
+
+        record = self.attendance.find_one({"employee_id": employee["_id"], "date": date_str})
+        if not record:
+            return {"status": "error", "message": "No attendance record for today. Please check-in first."}
+
+        if not record.get("check_in"):
+            return {"status": "error", "message": "Not checked in yet."}
+
+        break_event = {
+            "type": event_type,
+            "time": time_str,
+            "at": _to_utc_iso(now_utc),
+        }
+
+        self.attendance.update_one(
+            {"_id": record["_id"]},
+            {
+                "$push": {"break_events": break_event},
+                "$set": {"updated_at": now_utc},
+            }
+        )
+        self._notify_change()
+
+        return {
+            "status": "ok",
+            "event_type": event_type,
+            "time": time_str,
+            "employee_name": employee_name,
+            "date": date_str,
+            "message": f"Break {'started' if event_type == 'break_start' else 'ended'} at {time_str}",
+        }
+
+    def get_break_duration(self, row: dict) -> int:
+        """Calculate total break duration in minutes from break events."""
+        events = row.get("break_events") or []
+        if not events:
+            return 0
+
+        total = 0
+        start_time = None
+        for event in events:
+            t = self._parse_time_minutes(event.get("time"))
+            if t is None:
+                continue
+            if event.get("type") == "break_start":
+                start_time = t
+            elif event.get("type") == "break_end" and start_time is not None:
+                total += max(0, t - start_time)
+                start_time = None
+
+        return total

@@ -1,0 +1,480 @@
+/* ═══════════════════════════════════════════════════════
+   EMPLOYEE SALARY ACCRUAL DASHBOARD
+   Keeps the soft-green minimal style of the existing app
+   ═══════════════════════════════════════════════════════ */
+
+.emp-salary-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── Header ─────────────────────────────────────────── */
+
+.emp-salary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.emp-salary-header-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.emp-salary-header-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+}
+
+.emp-salary-header h3 {
+  margin: 0 0 2px;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.emp-salary-subtitle {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.emp-salary-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.emp-month-picker {
+  display: flex;
+  gap: 6px;
+}
+
+.emp-salary-select {
+  padding: 6px 10px;
+  border: 1.5px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  font-family: inherit;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.emp-salary-select:focus { border-color: var(--color-primary); }
+
+.emp-salary-refresh {
+  width: 32px;
+  height: 32px;
+  border: 1.5px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: var(--transition-fast);
+}
+.emp-salary-refresh:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.emp-salary-refresh:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Skeleton ────────────────────────────────────────── */
+
+@keyframes emp-shimmer {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1;   }
+}
+
+.emp-salary-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.emp-salary-skeleton-card {
+  height: 100px;
+  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  animation: emp-shimmer 1.4s ease-in-out infinite;
+}
+
+/* ── Hero progress card ──────────────────────────────── */
+
+.emp-salary-hero {
+  background: linear-gradient(135deg, #ffffff 0%, #f5f3ff 100%);
+  border: 1.5px solid rgba(79, 70, 229, 0.12);
+  border-radius: var(--radius-xl);
+  padding: 22px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  box-shadow: 0 4px 20px rgba(79, 70, 229, 0.08);
+}
+
+@media (max-width: 600px) {
+  .emp-salary-hero { flex-direction: column; align-items: flex-start; }
+}
+
+.emp-salary-hero-ring { flex-shrink: 0; }
+
+.salary-ring-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.salary-ring-inner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.ring-pct {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--color-primary);
+  line-height: 1;
+}
+
+.ring-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.emp-salary-hero-stats { flex: 1; min-width: 0; }
+
+.emp-salary-hero-main {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.esp-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 16px;
+  min-width: 100px;
+}
+.esp-metric:first-child { padding-left: 0; }
+
+.esp-divider {
+  width: 1px;
+  height: 36px;
+  background: var(--border-1);
+  flex-shrink: 0;
+}
+
+.esp-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.esp-value {
+  font-size: 1.1rem;
+  font-weight: 800;
+  line-height: 1;
+}
+.esp-value.primary  { color: var(--color-primary); }
+.esp-value.success  { color: #059669; }
+.esp-value.muted    { color: var(--text-secondary); }
+
+/* ── Progress bar ────────────────────────────────────── */
+
+.emp-salary-progress-bar-wrap { width: 100%; }
+
+.esp-bar-bg {
+  width: 100%;
+  height: 10px;
+  background: var(--surface-3);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  position: relative;
+}
+
+.esp-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4f46e5, #7c3aed);
+  border-radius: var(--radius-full);
+  transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.esp-bar-shine {
+  position: absolute;
+  top: 0;
+  left: -60%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
+  animation: bar-shine 2s ease-in-out infinite;
+}
+
+@keyframes bar-shine {
+  0%   { left: -60%; }
+  100% { left: 120%; }
+}
+
+.esp-bar-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.71rem;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-top: 5px;
+}
+
+.esp-bar-mid { flex: 1; text-align: center; }
+
+/* ── Quick metric cards ──────────────────────────────── */
+
+.emp-salary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.emp-salary-card {
+  background: #fff;
+  border: 1.5px solid var(--border-1);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  box-shadow: var(--shadow-sm);
+  transition: var(--transition-fast);
+}
+.emp-salary-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+
+.esc-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.esc-content { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.esc-label   { font-size: 0.72rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.esc-value   { font-size: 1.15rem; font-weight: 800; line-height: 1; }
+.esc-sub     { font-size: 0.72rem; color: var(--text-muted); font-weight: 500; }
+
+/* ── Chart card ──────────────────────────────────────── */
+
+.emp-salary-chart-card {
+  background: #fff;
+  border: 1.5px solid var(--border-1);
+  border-radius: var(--radius-xl);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+.emp-chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.emp-chart-header h4 { margin: 0 0 2px; font-size: 0.95rem; font-weight: 700; }
+
+.emp-chart-legend {
+  display: flex;
+  gap: 14px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.emp-chart-legend span { display: flex; align-items: center; gap: 5px; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+.emp-chart-wrap { margin: 0 -6px; }
+
+/* ── Tooltip ─────────────────────────────────────────── */
+
+.salary-chart-tooltip {
+  background: rgba(255,255,255,0.98);
+  border: 1.5px solid var(--border-1);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  box-shadow: var(--shadow-md);
+  min-width: 160px;
+  font-size: 0.82rem;
+}
+
+.sct-date { font-weight: 700; margin-bottom: 6px; color: var(--text-primary); }
+.sct-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+.sct-row strong { font-weight: 700; }
+.sct-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.sct-status { margin-top: 5px; font-weight: 600; font-size: 0.75rem; }
+
+/* ── Attendance Impact ───────────────────────────────── */
+
+.emp-impact-card {
+  background: #fff;
+  border: 1.5px solid var(--border-1);
+  border-radius: var(--radius-xl);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+.emp-impact-card h4 { margin: 0 0 2px; font-weight: 700; }
+
+.emp-impact-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0 0;
+}
+
+.impact-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  border: 1px solid var(--border-1);
+  transition: background 0.12s;
+}
+.impact-row:hover { background: var(--surface-2); }
+
+.impact-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.impact-info { flex: 1; min-width: 0; }
+.impact-label { display: block; font-size: 0.84rem; font-weight: 600; color: var(--text-primary); }
+.impact-days  { display: block; font-size: 0.75rem; color: var(--text-muted); font-weight: 500; }
+
+.impact-amount {
+  font-size: 0.9rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.impact-amount.earn   { color: #059669; }
+.impact-amount.deduct { color: #dc2626; }
+.impact-amount.neutral { color: var(--text-muted); font-weight: 600; }
+
+.emp-impact-net {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 12px 0;
+  margin-top: 12px;
+  border-top: 1.5px solid var(--border-1);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.emp-impact-net strong { font-size: 1.05rem; }
+.emp-impact-net--secondary {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.emp-impact-net--secondary strong {
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+.text-success { color: #059669; }
+
+/* ── Status breakdown chips ──────────────────────────── */
+
+.emp-status-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.emp-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border-radius: var(--radius-full);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.emp-status-chip.saturday-policy {
+  background: rgba(79, 70, 229, 0.08);
+  color: #4f46e5;
+}
+
+/* ── Empty state ─────────────────────────────────────── */
+
+.emp-salary-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.emp-salary-empty p { margin: 0; font-weight: 600; }
+
+/* ── Dark mode ───────────────────────────────────────── */
+
+.dark .emp-salary-hero {
+  background: linear-gradient(135deg, var(--surface-1) 0%, rgba(79,70,229,0.06) 100%);
+}
+.dark .emp-salary-card,
+.dark .emp-salary-chart-card,
+.dark .emp-impact-card {
+  background: var(--surface-1);
+}
+
+/* ── Responsive ──────────────────────────────────────── */
+
+@media (max-width: 500px) {
+  .emp-salary-cards  { grid-template-columns: 1fr 1fr; }
+  .emp-salary-hero   { padding: 16px; }
+  .esp-metric        { padding: 0 10px; }
+  .esp-value         { font-size: 0.95rem; }
+}

@@ -14,3 +14,6 @@ gunicorn==22.0.0
 orjson==3.10.7
 redis==5.0.8
 sentry-sdk[flask]==2.13.0
+cloudinary==1.41.0
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.10
