@@ -293,17 +293,41 @@ class AttendanceManager:
             and not record.get("check_out")
             and (bool(record.get("auto_absent")) or str(record.get("status") or "").strip().lower() == "absent")
         ):
+            entry_status = _entry_status_for_time(now_ist)
+            self.attendance.update_one(
+                {"_id": record["_id"]},
+                {
+                    "$set": {
+                        "status": entry_status,
+                        "entry_status": entry_status,
+                        "exit_status": None,
+                        "timing_status": entry_status,
+                        "check_in_at": now_utc_iso,
+                        "check_in": time_str,
+                        "check_out": None,
+                        "check_out_at": None,
+                        "entry_mode": source,
+                        "exit_mode": None,
+                        "manual_entry": source == "manual",
+                        "auto_absent": False,
+                        "updated_at": now_utc,
+                    }
+                },
+            )
+            self._notify_change()
             return {
-                "status": "already_absent",
-                "timing_status": "Absent",
+                "status": "checked_in",
+                "timing_status": entry_status,
+                "attendance_status": {
+                    "message": "Attendance marked successfully",
+                    "status": entry_status,
+                },
                 "employee_name": employee_name,
                 "date": date_str,
-                "check_in": None,
-                "check_in_at": None,
-                "check_out": None,
-                "check_out_at": None,
-                "message": "Attendance auto-marked absent for today",
-                "manual_entry": False,
+                "check_in_at": now_utc_iso,
+                "check_in": time_str,
+                "message": "Attendance marked successfully",
+                "manual_entry": source == "manual",
             }
 
         # If employee is checked-in but not checked-out yet, mark checkout immediately
@@ -411,16 +435,40 @@ class AttendanceManager:
             and not record.get("check_out")
             and (bool(record.get("auto_absent")) or str(record.get("status") or "").strip().lower() == "absent")
         ):
+            # Placeholder "absent" row (usually from auto_mark_absent_for_date): allow late check-in
+            # instead of locking the employee out for the rest of the day.
+            entry_status = _entry_status_for_time(now_ist)
+            self.attendance.update_one(
+                {"_id": record["_id"]},
+                {
+                    "$set": {
+                        "status": entry_status,
+                        "entry_status": entry_status,
+                        "exit_status": None,
+                        "timing_status": entry_status,
+                        "check_in_at": now_utc_iso,
+                        "check_in": time_str,
+                        "check_out": None,
+                        "check_out_at": None,
+                        "entry_mode": source,
+                        "exit_mode": None,
+                        "manual_entry": source == "manual",
+                        "auto_absent": False,
+                        "updated_at": now_utc,
+                    }
+                },
+            )
+            self._notify_change()
             return {
-                "status": "already_absent",
-                "timing_status": "Absent",
+                "status": "checked_in",
+                "timing_status": entry_status,
                 "employee_name": employee_name,
                 "date": date_str,
-                "check_in": None,
-                "check_in_at": None,
+                "check_in": time_str,
+                "check_in_at": now_utc_iso,
                 "check_out": None,
                 "check_out_at": None,
-                "message": "Attendance auto-marked absent for today",
+                "message": "Entry marked successfully (recovered from absent placeholder)",
             }
 
         if not record.get("check_out"):

@@ -413,17 +413,7 @@ export default function EmployeePayrollCalculator({ employee, token, company }) 
     if (!empId) return
     try {
       const qe = encodeURIComponent(empId)
-      const data = await apiFetchWithPaths(
-        [
-          `/api/payroll/payslip-admin?op=status&employee_id=${qe}&year=${year}&month=${month}`,
-          `/api/admin/payslip-workflow?op=status&employee_id=${qe}&year=${year}&month=${month}`,
-          `/api/payroll/employee/${empId}/payslips/status?year=${year}&month=${month}`,
-          `/api/employees/${empId}/payslips/status?year=${year}&month=${month}`,
-          `/api/payroll/employee/${empId}/payslip-status?year=${year}&month=${month}`,
-        ],
-        {},
-        token,
-      )
+      const data = await apiFetch(`/api/payroll/payslips/status?employee_id=${qe}&year=${year}&month=${month}`, {}, token)
       setPayslipStatus(data.status || 'none')
     } catch {
       setPayslipStatus('none')
@@ -434,16 +424,7 @@ export default function EmployeePayrollCalculator({ employee, token, company }) 
     if (!empId) return
     try {
       const qe = encodeURIComponent(empId)
-      const rows = await apiFetchWithPaths(
-        [
-          `/api/payroll/payslip-admin?op=history&employee_id=${qe}`,
-          `/api/admin/payslip-workflow?op=history&employee_id=${qe}`,
-          `/api/payroll/employee/${empId}/payslips/history`,
-          `/api/employees/${empId}/payslips/history`,
-        ],
-        {},
-        token,
-      )
+      const rows = await apiFetch(`/api/payroll/payslips/history?employee_id=${qe}`, {}, token)
       setPayslipHistory(Array.isArray(rows) ? rows : [])
     } catch {
       setPayslipHistory([])
@@ -497,18 +478,13 @@ export default function EmployeePayrollCalculator({ employee, token, company }) 
     if (payslipStatus === 'published') {
       setApproving(true)
       try {
-        await apiFetchWithPaths(
-          [
-            '/api/payroll/payslip-admin',
-            '/api/admin/payslip-workflow',
-            `/api/payroll/employee/${empId}/payslips/approve`,
-            `/api/employees/${empId}/payslips/approve`,
-            `/api/payroll/employee/${empId}/payslip-approve`,
-          ],
-          { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ op: 'approve', employee_id: empId, year, month }) },
-          token,
-        )
+        console.log('Sending approve request: POST /api/payroll/payslips/approve', { employee_id: empId, year, month });
+        console.log('Sending approve request: POST /api/payroll/payslips/approve', { employee_id: empId, year, month });
+        await apiFetch(`/api/payroll/payslips/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ employee_id: empId, year, month })
+        }, token)
         setPayslipStatus('approved')
         showToast('Payslip approved! Employee can now download.')
         loadPayslipHistory()

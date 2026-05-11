@@ -575,6 +575,33 @@ app.register_blueprint(multi_tenant_bp)
 app.register_blueprint(whitelabel_bp)
 app.config["_db"] = db  # Share DB reference with blueprints
 
+
+def _log_registered_routes():
+    try:
+        payroll_routes = []
+        for rule in app.url_map.iter_rules():
+            if str(rule.rule).startswith("/api/payroll/payslips"):
+                methods = sorted(m for m in rule.methods if m not in {"HEAD", "OPTIONS"})
+                payroll_routes.append(f"{','.join(methods)} {rule.rule}")
+        if payroll_routes:
+            for line in sorted(payroll_routes):
+                logger.info("payroll_route_registered", extra={"event": "payroll_route_registered", "route": line})
+    except Exception:
+        logger.exception("route_logging_failed", extra={"event": "route_logging_failed"})
+
+
+_log_registered_routes()
+
+
+@app.get("/api/_debug/payroll-routes")
+def debug_payroll_routes():
+    routes = []
+    for rule in app.url_map.iter_rules():
+        if str(rule.rule).startswith("/api/payroll/payslips"):
+            methods = sorted(m for m in rule.methods if m not in {"HEAD", "OPTIONS"})
+            routes.append({"path": rule.rule, "methods": methods})
+    return jsonify({"success": True, "routes": routes})
+
 validate_enrollment_faces = str(os.getenv("VALIDATE_ENROLLMENT_FACES", "true")).lower() in {"1", "true", "yes", "on"}
 min_enrollment_images = int(os.getenv("MIN_ENROLLMENT_IMAGES", "3"))
 allow_credentials_only_enrollment = str(
@@ -5564,10 +5591,13 @@ def list_leave_requests():
     if employee_id:
         from bson import ObjectId
         from bson.errors import InvalidId
+        id_literals = {str(employee_id)}
         try:
-            query["employee_id"] = str(employee_id) if len(str(employee_id)) < 24 else employee_id
+            if len(str(employee_id)) == 24:
+                id_literals.add(ObjectId(employee_id))
         except InvalidId:
             pass
+        query["employee_id"] = {"$in": list(id_literals)}
 
     if company_id and not employee_id:
         company_employee_ids = _get_company_employee_ids(company_id)
@@ -5577,8 +5607,26 @@ def list_leave_requests():
             id_literals.append(str(eid))
         query["employee_id"] = {"$in": id_literals}
 
-    rows = list(db.leave_requests_v2.find(query).sort("applied_at", -1))
-    return jsonify([_serialize_leave_request(row) for row in rows])
+    rows = []
+    if hasattr(db, "leave_requests_v2"):
+        rows.extend(list(db.leave_requests_v2.find(query).sort("applied_at", -1)))
+    if hasattr(db, "leave_requests"):
+        rows.extend(list(db.leave_requests.find(query).sort("applied_at", -1)))
+
+    seen = set()
+    merged = []
+    for row in rows:
+        rid = str(row.get("_id") or "")
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        merged.append(row)
+
+    def _sort_key(row):
+        return str(row.get("applied_at") or row.get("created_at") or row.get("start_date") or "")
+
+    merged.sort(key=_sort_key, reverse=True)
+    return jsonify([_serialize_leave_request(row) for row in merged])
 
 
 @app.post("/api/leave_requests/<request_id>/approve")
@@ -10217,7 +10265,7 @@ def _admin_payslip_approve_core(employee_id: str):
     return jsonify({"message": "Payslip approved. Employee can now download.", "year": year, "month": month}), 200
 
 
-@app.route("/api/employees/<employee_id>/payslips/approve", methods=["POST", "OPTIONS"])
+
 @admin_auth_required
 @limiter.limit("60 per hour")
 def api_approve_employee_payslip(employee_id):
@@ -10225,7 +10273,7 @@ def api_approve_employee_payslip(employee_id):
     return _admin_payslip_approve_core(employee_id)
 
 
-@app.route("/api/payroll/employee/<employee_id>/payslip-approve", methods=["POST", "OPTIONS"])
+
 @admin_auth_required
 @limiter.limit("60 per hour")
 def api_approve_employee_payslip_compat(employee_id):
@@ -10233,7 +10281,7 @@ def api_approve_employee_payslip_compat(employee_id):
     return _admin_payslip_approve_core(employee_id)
 
 
-@app.route("/api/employees/<employee_id>/payslips/status", methods=["GET", "HEAD", "OPTIONS"])
+
 @admin_auth_required
 @limiter.limit("120 per hour")
 def api_get_payslip_status(employee_id):
@@ -10241,7 +10289,7 @@ def api_get_payslip_status(employee_id):
     return _admin_payslip_status_response(employee_id)
 
 
-@app.route("/api/payroll/employee/<employee_id>/payslip-status", methods=["GET", "HEAD", "OPTIONS"])
+
 @admin_auth_required
 @limiter.limit("120 per hour")
 def api_get_payslip_status_compat(employee_id):
@@ -10249,15 +10297,8 @@ def api_get_payslip_status_compat(employee_id):
     return _admin_payslip_status_response(employee_id)
 
 
-@app.route("/api/admin/payslip-workflow", methods=["GET", "POST", "HEAD", "OPTIONS"])
-def api_admin_payslip_workflow_alias():
-    """Same behaviour as GET/POST /api/payroll/payslip-admin (blueprint); alternate path for strict proxies."""
-    from src.routes.payroll import payroll_payslip_admin
-
-    return payroll_payslip_admin()
 
 
-@app.route("/api/employees/<employee_id>/payslips/history", methods=["GET", "HEAD", "OPTIONS"])
 @admin_auth_required
 @limiter.limit("120 per hour")
 def api_employee_payslips_history(employee_id):
@@ -11025,6 +11066,39 @@ def handle_large_upload(_error):
 @app.errorhandler(429)
 def handle_rate_limit(_error):
     return jsonify({"status": "rate_limited", "message": "Too many requests. Please wait a moment and try again."}), 429
+
+
+@app.errorhandler(404)
+def handle_not_found(error):
+    return jsonify({
+        "success": False,
+        "message": "Route not found",
+        "details": {"method": request.method, "path": request.path},
+    }), 404
+
+
+@app.errorhandler(405)
+def handle_method_not_allowed(error):
+    allowed = sorted(getattr(error, "valid_methods", []) or [])
+    return jsonify({
+        "success": False,
+        "message": "Method not allowed",
+        "details": {"method": request.method, "path": request.path, "allowed_methods": allowed},
+    }), 405
+
+
+@app.errorhandler(400)
+def handle_bad_request(error):
+    return jsonify({
+        "success": False,
+        "message": "Bad request",
+        "details": {
+            "method": request.method,
+            "path": request.path,
+            "query": dict(request.args),
+            "body": request.get_json(silent=True),
+        },
+    }), 400
 
 
 @app.errorhandler(Exception)

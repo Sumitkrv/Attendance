@@ -2825,7 +2825,7 @@ export default function AdminPage() {
       pdf.setFont('helvetica', 'normal')
       const paidDays = row?.paid_days ?? 30
       const lopDays = row?.lop_days ?? 0
-      pdf.text(`Total Days: ${paidDays + lopDays}    Paid Days: ${paidDays}    LOP/Unpaid: ${lopDays}`, 14, y)
+      pdf.text(`Total Days: ${paidDays + lopDays}    Payable Days: ${paidDays}    LOP/Unpaid: ${lopDays}`, 14, y)
       y += 8
       pdf.line(14, y, pageWidth - 14, y)
       y += 12
@@ -5817,7 +5817,12 @@ export default function AdminPage() {
 
     return (manualRequests || [])
       .filter((r) => {
-        if (!rowInDashboardRequestRange(r, dashboardRangeBounds)) return false
+        // Pending / conflict must always show: badge counts them globally, but the dashboard
+        // date window is often "today" while leave dates are in the future — without this,
+        // admins see a badge but an empty table.
+        const st = requestStatusKey(r)
+        const needsAction = st === 'pending' || st === 'conflict'
+        if (!needsAction && !rowInDashboardRequestRange(r, dashboardRangeBounds)) return false
 
         const type = requestTypeKey(r)
         if (requestsTypeFilter !== 'all' && type !== requestsTypeFilter) return false

@@ -237,9 +237,102 @@ def list_payslips():
     return jsonify(_to_json_safe(payslips))
 
 
-@payroll_bp.route("/api/payroll/payslips/<payslip_id>", methods=["GET"])
+def _api_response(success: bool, message: str = "", data=None):
+    return jsonify({
+        "success": bool(success),
+        "message": message or "",
+        "data": data,
+    })
+
+
+@payroll_bp.route("/api/payroll/payslips/status", methods=["GET", "HEAD", "OPTIONS"])
+@admin_auth_required
+def payroll_payslip_status_unified():
+    print("PAYROLL_API", request.method, dict(request.args), None, request.view_args)
+    db = _get_db()
+    if db is None:
+        return _api_response(False, "Database not available", None), 503
+
+    employee_id = request.args.get("employee_id")
+    if not employee_id:
+        print("PAYROLL_API_ERROR", "missing_employee_id")
+        return _api_response(False, "employee_id is required", {"received": dict(request.args)}), 400
+
+    try:
+        year = int(request.args.get("year"))
+        month = int(request.args.get("month"))
+    except (TypeError, ValueError):
+        print("PAYROLL_API_ERROR", "invalid_year_month", request.args.get("year"), request.args.get("month"))
+        return _api_response(False, "year and month are required integers", {"received": dict(request.args)}), 400
+
+    payload, code = _payslip_admin_status_payload(db, employee_id, year, month)
+    success = code == 200
+    return _api_response(success, "", payload), code
+
+
+@payroll_bp.route("/api/payroll/payslips/history", methods=["GET", "HEAD", "OPTIONS"])
+@admin_auth_required
+def payroll_payslip_history_unified():
+    print("PAYROLL_API", request.method, dict(request.args), None, request.view_args)
+    db = _get_db()
+    if db is None:
+        return _api_response(False, "Database not available", None), 503
+
+    employee_id = request.args.get("employee_id")
+    if not employee_id:
+        print("PAYROLL_API_ERROR", "missing_employee_id")
+        return _api_response(False, "employee_id is required", {"received": dict(request.args)}), 400
+
+    payload = _payslip_admin_history_payload(db, employee_id)
+    return _api_response(True, "", payload), 200
+
+
+@payroll_bp.route("/api/payroll/payslips/approve", methods=["POST", "PATCH", "OPTIONS"])
+@admin_auth_required
+def payroll_payslip_approve_unified():
+    body = request.get_json(force=True, silent=True) or {}
+    print("PAYROLL_API", request.method, dict(request.args), body, request.view_args)
+    db = _get_db()
+    if db is None:
+        return _api_response(False, "Database not available", None), 503
+
+    employee_id = body.get("employee_id")
+    if not employee_id:
+        print("PAYROLL_API_ERROR", "missing_employee_id")
+        return _api_response(False, "employee_id is required", {"received": body}), 400
+
+    try:
+        year = int(body.get("year"))
+        month = int(body.get("month"))
+    except (TypeError, ValueError):
+        print("PAYROLL_API_ERROR", "invalid_year_month", body.get("year"), body.get("month"))
+        return _api_response(False, "year and month are required integers", {"received": body}), 400
+
+    try:
+        ObjectId(employee_id)
+    except InvalidId:
+        print("PAYROLL_API_ERROR", "invalid_employee_id", employee_id)
+        return _api_response(False, "Invalid employee id", {"received": body}), 400
+
+    res, code = _payslip_admin_approve(db, str(employee_id), year, month)
+    res_data = res.get_json() if hasattr(res, "get_json") else {}
+    success = code == 200
+    message = res_data.get("message", "") if isinstance(res_data, dict) else ""
+    return _api_response(success, message, res_data), code
+
+
+@payroll_bp.route("/api/payroll/payslips/<payslip_id>", methods=["GET", "POST", "PATCH", "OPTIONS", "HEAD"])
 def get_payslip(payslip_id):
-    """Get a specific payslip."""
+    """Get a specific payslip (fallback for workflow paths)."""
+    if payslip_id in {"status", "history", "approve"}:
+        if payslip_id == "status" and request.method in {"GET", "HEAD"}:
+            return payroll_payslip_status_unified()
+        if payslip_id == "history" and request.method in {"GET", "HEAD"}:
+            return payroll_payslip_history_unified()
+        if payslip_id == "approve" and request.method in {"POST", "PATCH"}:
+            return payroll_payslip_approve_unified()
+        return _api_response(False, "Method not allowed", None), 405
+
     db = _get_db()
     if db is None:
         return jsonify({"message": "Database not available"}), 503
@@ -380,7 +473,7 @@ def _payslip_admin_approve(db, employee_id: str, year: int, month: int):
     return jsonify({"message": "Payslip approved. Employee can now download.", "year": year, "month": month}), 200
 
 
-@payroll_bp.route("/api/payroll/payslip-admin", methods=["GET", "POST", "HEAD", "OPTIONS"])
+
 @admin_auth_required
 def payroll_payslip_admin():
     """Flat URL for payslip status/history/approve (avoids 405 from nested /payslips/ paths on some stacks)."""
@@ -423,7 +516,7 @@ def payroll_payslip_admin():
     return "", 204
 
 
-@payroll_bp.route("/api/payroll/employee/<employee_id>/payslips/status", methods=["GET", "HEAD", "OPTIONS"])
+
 @admin_auth_required
 def payroll_employee_payslip_status(employee_id):
     db = _get_db()
@@ -432,7 +525,7 @@ def payroll_employee_payslip_status(employee_id):
     return _payslip_admin_status_from_request(db, employee_id)
 
 
-@payroll_bp.route("/api/payroll/employee/<employee_id>/payslips/history", methods=["GET", "HEAD", "OPTIONS"])
+
 @admin_auth_required
 def payroll_employee_payslips_history(employee_id):
     db = _get_db()
@@ -442,7 +535,7 @@ def payroll_employee_payslips_history(employee_id):
     return jsonify(_payslip_admin_history_payload(db, employee_id)), 200
 
 
-@payroll_bp.route("/api/payroll/employee/<employee_id>/payslips/approve", methods=["POST", "OPTIONS"])
+
 @admin_auth_required
 def payroll_employee_payslip_approve(employee_id):
     db = _get_db()
@@ -528,3 +621,6 @@ def _get_present_days(db, employee_id: str, year: int, month: int) -> int:
         "status": {"$in": ["checked_in", "checked_out", "present"]},
     })
     return count
+
+
+

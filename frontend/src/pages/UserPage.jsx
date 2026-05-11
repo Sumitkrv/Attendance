@@ -2446,9 +2446,15 @@ export default function UserPage() {
     || /already\s+marked|entry\s+marked|check[_\s-]?in|check[_\s-]?out|bye\s+bye/i.test(statusText)
   )
   const attendanceStatus = String(attendanceState || '').toLowerCase()
-  const canPunchIn = !['checked_in', 'checked_out', 'already_recorded', 'absent', 'leave_marked'].includes(attendanceStatus)
+  // Allow punch-in when status is "absent" only as a placeholder (auto-absent / no check-in yet);
+  // backend converts that row to a real check-in. "leave_marked" stays disabled.
+  const canPunchIn = !['checked_in', 'checked_out', 'already_recorded', 'leave_marked'].includes(attendanceStatus)
   const canPunchOut = attendanceStatus === 'checked_in'
   const canMarkLeave = !['checked_in', 'checked_out', 'already_recorded', 'leave_marked'].includes(attendanceStatus)
+  const punchInDisabledReason =
+    attendanceStatus === 'leave_marked'
+      ? 'You are marked on leave for today. Contact HR if this is wrong.'
+      : ''
   const geofenceDisabled = /location\s+verification\s+is\s+disabled\s+by\s+admin|geofence_disabled|geofence\s+is\s+disabled/i.test(`${status} ${error} ${message}`)
   const geofenceOutside = /outside\s+office\s+geofence|outside\s+geofence/i.test(`${status} ${error} ${message}`)
   const checkedInAtText = attendanceTimes.checkIn || '--'
@@ -3020,6 +3026,7 @@ export default function UserPage() {
                           className="lhr-action-btn"
                           onClick={() => punchAttendance('in')}
                           disabled={!canPunchIn}
+                          title={!canPunchIn && punchInDisabledReason ? punchInDisabledReason : 'Record check-in (location may be required)'}
                         >
                           <Fingerprint size={22} />
                           <span>Punch In</span>
@@ -3029,6 +3036,7 @@ export default function UserPage() {
                           className="lhr-action-btn lhr-action-danger"
                           onClick={() => punchAttendance('out')}
                           disabled={!canPunchOut}
+                          title={!canPunchOut ? 'Check in first' : 'Record check-out'}
                         >
                           <Power size={22} />
                           <span>Punch Out</span>
@@ -3038,6 +3046,11 @@ export default function UserPage() {
                           className="lhr-action-btn"
                           onClick={markLeaveForToday}
                           disabled={!canMarkLeave || leaveSubmitting}
+                          title={
+                            !canMarkLeave && attendanceStatus === 'leave_marked'
+                              ? 'Already marked on leave for today'
+                              : 'Apply for leave (quick mark for today)'
+                          }
                         >
                           <CalendarDays size={22} />
                           <span>Request Leave</span>
