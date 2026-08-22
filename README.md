@@ -1,319 +1,194 @@
-# Face Recognition Attendance System
+# StaffSphere HRMS
 
-Production-ready, modular Face Recognition Attendance System for offices.
+StaffSphere is a self-hosted human-resources management system for attendance, payroll, employee self-service, and geofenced check-ins. It provides separate administrator and employee workspaces backed by a Flask API and a React application.
 
-## What was improved
-- Liveness detection (blink + face movement checks)
-- Anti-spoofing guard (face texture sharpness check)
-- Faster model training (parallel encoding + image resize)
-- Faster runtime recognition (frame skipping + optimized face distance match)
-- Production security (JWT auth, protected endpoints, CORS allowlist, upload size limit, rate limiting)
-- Dockerized deployment (MongoDB + Python Backend)
+## Highlights
 
-## Stack
-- Backend: Python, Flask, OpenCV, face-recognition, MongoDB
-- Database: MongoDB
-- Frontend: React + Vite
+- Role-based administrator and employee portals with JWT authentication
+- Employee onboarding, departments, roles, company management, and audit logs
+- Location-based attendance with configurable office geofencing
+- Attendance policies, shift scheduling, manual corrections, leave requests, holidays, and reports
+- Payroll calculation, salary structures, payslips, reimbursements, tax/TDS utilities, and bulk payroll runs
+- Employee assets, helpdesk tickets, tasks, notifications, and account-security controls
+- Multi-company/tenant scoping, white-label settings, Cloudinary-backed assets, Redis rate-limit storage, and optional Sentry monitoring
+- English and Hindi interface support, responsive UI, export tools, and real-time update hooks
 
-## Project Structure
+## Tech stack
 
-face-attendance-system/
-- backend/
-  - dataset/
-  - models/
-  - src/
-    - api/app.py
-    - attendance/attendance_manager.py
-    - utils/helpers.py
-    - capture_faces.py
-    - train_model.py
-    - recognize_faces.py
-  - requirements.txt
-  - .env.example
+| Layer | Technology |
+| --- | --- |
+| Frontend | React 18, Vite, React Router, Zustand, TanStack Query, Tailwind CSS, Recharts |
+| API | Python, Flask, PyMongo, JWT, Flask-Limiter |
+| Data | MongoDB; SQLite is used by the attendance-policy engine |
+| Supporting services | Redis, Cloudinary (optional), Sentry (optional) |
+| Deployment | Docker, Docker Compose, Gunicorn, Vercel configuration |
 
-## 1) Prerequisites (Windows/Mac/Linux)
+## Repository layout
 
-- Python 3.10+
-- MongoDB running locally or remotely
-- Webcam
+```text
+.
+├── frontend/                 # React/Vite web application
+│   └── src/pages/            # Admin and employee workspaces
+├── backend/
+│   ├── src/api/app.py        # Main Flask application
+│   ├── src/routes/           # Payroll, leave, reports, shifts, etc.
+│   ├── src/policy_engine/    # Attendance-policy service
+│   ├── app/                  # Separate FastAPI starter scaffold
+│   └── tests/                # Backend tests
+├── persistent/               # Runtime data and employee uploads (do not publish real data)
+├── docker-compose.yml        # MongoDB, Redis, backend, and Uptime Kuma services
+└── e2e/                      # Playwright end-to-end test setup
+```
 
-### OS Notes
-- **Windows**: Install "Visual Studio Build Tools" if `face-recognition` wheel is unavailable.
-- **macOS**: `xcode-select --install` and `brew install cmake` may be required.
-- **Linux**: Install build deps (`cmake`, `build-essential`, `python3-dev`) if needed.
+## Prerequisites
 
-## 2) Backend Setup
+- Node.js 18 or later
+- Python 3.10 or later (the Docker image uses Python 3.11)
+- MongoDB 7+ for the primary application data store
+- Redis 7+ when using distributed rate limiting
 
-1. Go to backend folder.
-2. Create virtual environment.
-3. Install requirements.
-4. Copy environment file and update values.
+## Run locally
+
+### 1. Configure the backend
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env       # Windows PowerShell: copy .env.example .env
+cp .env.example .env
 ```
 
-Start backend:
+Update `backend/.env` with a strong `SECRET_KEY`, the MongoDB connection details, allowed frontend origins, administrator credentials, and (when enabled) office geofence coordinates. Do not commit this file.
+
+Create an environment and install dependencies:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate # Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+Start the main Flask API:
 
 ```bash
 python src/api/app.py
 ```
 
-Backend runs on `http://localhost:5001` by default.
+The API listens on `http://127.0.0.1:5001` by default. Confirm it is running with `GET /health`.
 
-### Store employee assets on Cloudinary
+### 2. Configure and start the frontend
 
-Set these backend env variables:
-
-- `ASSETS_STORAGE=cloudinary`
-- `CLOUDINARY_CLOUD_NAME=<your_cloud_name>`
-- `CLOUDINARY_API_KEY=<your_api_key>`
-- `CLOUDINARY_API_SECRET=<your_api_secret>`
-- Optional: `CLOUDINARY_ASSETS_FOLDER=hrms-employee-assets`
-
-Install/update backend packages and restart backend:
-
-- `pip install -r requirements.txt`
-- `python src/api/app.py`
-
-If `ASSETS_STORAGE` is not `cloudinary`, backend uses local storage at `persistent/assets`.
-
-## 3) Frontend Setup (Restored UI)
+In another terminal:
 
 ```bash
 cd frontend
+cp .env.example .env
 npm install
-npm run dev -- --host 0.0.0.0 --port 5173
+npm run dev
 ```
 
-Frontend routes:
+Set `VITE_API_URL=http://127.0.0.1:5001` in `frontend/.env` when using the default local backend. Open `http://127.0.0.1:5173`; the root route redirects to the administrator portal.
 
-- `http://127.0.0.1:5173/admin`
-- `http://127.0.0.1:5173/user`
-- Or use your computer's LAN IP from another device on the same Wi-Fi/hotspot
+## Docker Compose
 
-Local dev now allows browser clients on your LAN/hotspot network to reach the API; for public deployment, keep CORS restricted in the production env.
-
-> Note: all admin APIs (except `/health` and `/admin/login`) now require JWT bearer token.
-
-## Environment Config Split
-
-Use separate backend environment files per stage:
-
-- Backend: `backend/.env.dev`, `backend/.env.staging`, `backend/.env.prod`
-
-Backend env loading priority:
-
-1. `ENV_FILE` (explicit file path)
-2. `backend/.env.<APP_ENV>` (for example `APP_ENV=dev|staging|prod`)
-3. fallback `backend/.env` (backward compatibility)
-
-### Safe defaults policy
-
-- Keep only safe defaults in tracked env files.
-- Never commit real secrets to Git.
-- Store secrets in secret manager / deployment platform variables.
-
-### Required production backend variables
-
-- `SECRET_KEY` (must not be default)
-- `MONGODB_URI`
-- `ALLOWED_ORIGINS`
-- admin credentials/hash:
-  - `ADMIN_USERNAME`
-  - `ADMIN_PASSWORD_HASH` (preferred) or `ADMIN_PASSWORD`
-- geofence settings:
-  - `OFFICE_LAT`
-  - `OFFICE_LNG`
-  - `OFFICE_RADIUS_METERS`
-
-When `APP_ENV=prod`, backend startup validates these variables and fails fast if missing.
-
-## 4) Add New Employees
-
-### Option A (API with images)
-Use `POST /register_employee` as multipart/form-data:
-- `name`: employee name
-- `department`: department
-- `files[]`: one or more face images
-
-### Option B (capture from webcam)
-
-```bash
-cd backend
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-python -m src.capture_faces --name "sumit" --count 20
-```
-
-This creates images under `backend/dataset/sumit/`.
-
-## 5) Train Model
-
-- API: `POST /train_model`
-- Or CLI:
-
-```bash
-cd backend
-source .venv/bin/activate
-python -m src.train_model
-```
-
-Generated model file:
-- `backend/models/face_encodings.pkl`
-
-## 6) Start Recognition Camera
-
-Call API endpoint:
-- `POST /start_camera`
-
-Stop camera:
-- `POST /stop_camera`
-
-Check camera state:
-- `GET /camera_status`
-
-When a known employee is detected:
-- first detection of day -> `check_in`
-- later detection -> `check_out` (duplicate prevention window applied)
-
-### Liveness + Anti-spoof flow
-Attendance is marked only after passive checks pass:
-- `texture_ok`: face ROI Laplacian variance threshold
-- `blink_ok`: blink event detected with EAR threshold logic
-- `movement_ok`: slight facial movement across frames
-
-Default rule:
-- mark attendance only if `texture_ok` and (`blink_ok` or `movement_ok`)
-
-## 7) API Endpoints
-
-- `POST /register_employee`
-- `POST /train_model`
-- `POST /start_camera`
-- `POST /stop_camera`
-- `GET /camera_status`
-- `GET /attendance?date=YYYY-MM-DD`
-- `GET /employees`
-- `POST /admin/login`
-- `GET /health`
-
-### Auth
-- Login: `POST /admin/login` returns JWT token.
-- Send token in header for protected endpoints:
-  - `Authorization: Bearer <token>`
-
-## 8) MongoDB Schema
-
-### employees
-- `_id`
-- `name`
-- `department`
-- `image_folder`
-- `created_at`
-- `updated_at`
-
-### attendance
-- `_id`
-- `employee_id`
-- `employee_name`
-- `date`
-- `check_in`
-- `check_out`
-- `created_at`
-- `updated_at`
-
-## 9) Python-Only Usage
-
-- Use backend APIs directly (Postman/curl/custom Python client)
-- Use CLI scripts for capture and training
-- Start/stop recognition camera through API endpoints
-
-## 10) Production Notes
-
-- Set strong `SECRET_KEY` in `backend/.env`
-- Use `ADMIN_PASSWORD_HASH` instead of plain password (recommended)
-- Restrict `ALLOWED_ORIGINS` to your exact domain list
-- Keep `MAX_CONTENT_LENGTH_MB` low for upload abuse control
-- Run behind HTTPS reverse proxy
-- Use managed MongoDB with backups + network policy
-- Store all production secrets in a secret manager (not in committed env files)
-
-### Infra hardening knobs
-
-- Rate limiter backend (Redis):
-  - `RATE_LIMIT_STORAGE_URI=redis://<redis-host>:6379/0`
-- Sentry monitoring:
-  - `SENTRY_DSN=<dsn>`
-  - `SENTRY_TRACES_SAMPLE_RATE=0.1`
-- Health endpoints:
-  - `GET /health` (liveness + dependency details)
-  - `GET /ready` (readiness, returns 503 if critical deps fail)
-
-### Mongo backup/restore preflight
-
-Run before release:
-
-```bash
-cd backend
-PYTHONPATH=. .venv/bin/python scripts/mongo_backup_restore_check.py
-```
-
-This verifies:
-- `mongodump` installed
-- `mongorestore` installed
-- Mongo ping connectivity
-
-If command checks fail, install MongoDB Database Tools on the host running backups.
-
-## 10.1) Release Regression Gate (run before every deploy)
-
-Run this API suite against your running backend (dev/staging/prod):
-
-```bash
-cd backend
-export REGRESSION_USER_LOGIN_ID=<known_user_login_id>
-export REGRESSION_USER_PASSWORD=<known_user_password>
-# optional: force mismatch user
-# export REGRESSION_MISMATCH_USER_LOGIN_ID=<second_user_login_id>
-PYTHONPATH=. .venv/bin/python scripts/release_regression_suite.py
-```
-
-The suite verifies:
-- user login + token/session expiry policy
-- geofence OFF blocks attendance scan
-- geofence ON + changed office location behavior
-- face mismatch rejection
-
-The script returns non-zero exit code if any regression fails.
-
-## 11) Docker Setup
-
-### Run Python backend + MongoDB with Docker Compose
+Docker Compose starts MongoDB, Redis, the Flask backend, and Uptime Kuma:
 
 ```bash
 cp backend/.env.example backend/.env
+# Edit backend/.env before using it outside local development.
 docker compose up --build
 ```
 
-Services:
-- Backend: `http://localhost:5001`
-- MongoDB: `mongodb://localhost:27017`
+Services are exposed at:
 
-### Stop stack
+| Service | Address |
+| --- | --- |
+| Flask API | `http://localhost:5001` |
+| MongoDB | `mongodb://localhost:27017` |
+| Redis | `redis://localhost:6379` |
+| Uptime Kuma | `http://localhost:3001` |
 
-```bash
-docker compose down
+For production, inject secrets through the hosting platform or a secret manager, use an exact `ALLOWED_ORIGINS` list, and configure persistent volumes/backups for MongoDB and runtime data.
+
+## Environment configuration
+
+The backend loads configuration in this order:
+
+1. File specified by `ENV_FILE`
+2. `backend/.env.<APP_ENV>` (for example, `.env.dev`, `.env.staging`, or `.env.prod`)
+3. `backend/.env`
+
+Key backend settings include:
+
+| Variable | Purpose |
+| --- | --- |
+| `SECRET_KEY` | Token signing secret; use a long, unique production value |
+| `MONGODB_URI`, `MONGODB_DB` | Primary application database |
+| `ALLOWED_ORIGINS` | Comma-separated browser origins permitted by CORS |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH` | Initial/admin authentication configuration |
+| `ENABLE_OFFICE_GEOFENCE`, `OFFICE_LAT`, `OFFICE_LNG`, `OFFICE_RADIUS_METERS` | Location-bound attendance controls |
+| `ASSETS_STORAGE` | Set to `cloudinary` to store employee assets in Cloudinary |
+| `RATE_LIMIT_STORAGE_URI` | Redis URL for shared rate-limit storage |
+| `SENTRY_DSN` | Optional Sentry error reporting endpoint |
+
+Refer to [`backend/.env.example`](backend/.env.example) for the full documented set of options. Production startup validates required configuration and should not rely on the sample credential values.
+
+## Geofenced attendance
+
+Employees can check in and check out from the employee portal. Enable office-location validation by setting the following values in `backend/.env`:
+
+```env
+ENABLE_OFFICE_GEOFENCE=true
+OFFICE_LAT=<office-latitude>
+OFFICE_LNG=<office-longitude>
+OFFICE_RADIUS_METERS=100
 ```
 
-## 12) Performance tuning knobs (.env)
+Adjust the allowed radius to suit the office location and test it on representative employee devices before enabling it for the whole organization.
 
-- `PROCESS_EVERY_N_FRAMES` (higher = less CPU)
-- `FRAME_RESIZE_SCALE` (lower = faster, less accurate)
-- `RECOGNITION_TOLERANCE` (lower = stricter match)
-- `DISPLAY_PREVIEW` (set `true` only for local desktop preview)
-- `TRAIN_IMAGE_MAX_WIDTH` (smaller = faster encoding)
-- `TRAIN_MAX_WORKERS` (0 = auto)
+## API overview
+
+The API exposes routes for authentication, attendance, employees, payroll, leave, assets, reporting, companies, and account security. Common entry points include:
+
+| Area | Examples |
+| --- | --- |
+| Health and authentication | `GET /health`, `POST /admin/login`, `POST /user/login` |
+| Attendance | `POST /user/mark_entry_on_login`, `GET /attendance`, `POST /attendance/manual` |
+| Employees | `GET /api/employees`, `POST /api/employees`, `PUT /api/employees/:employee_id` |
+| Payroll | `GET /api/payroll/summary`, `POST /api/payroll/calculate` |
+| Employee self-service | `GET /user/attendance_today`, `GET /user/payroll/payslips`, `POST /user/reimbursements` |
+
+Protected endpoints require an admin or user JWT, as appropriate. The running application provides additional API-related routes and module blueprints; review the route source before integrating a client.
+
+## Tests and builds
+
+```bash
+# Frontend unit tests
+cd frontend && npm run test
+
+# Frontend production build
+cd frontend && npm run build
+
+# Backend tests
+cd backend && pytest
+
+# End-to-end test setup
+cd e2e && npm install && npx playwright test
+```
+
+## Security checklist before publishing to GitHub
+
+- Keep `.env` files, API keys, database dumps, and user uploads out of version control.
+- Remove or replace the contents of `persistent/` if they contain real employee data, uploads, or database exports.
+- Use password hashes (`ADMIN_PASSWORD_HASH`) and rotate any credentials that have already been exposed.
+- Configure HTTPS, restrictive CORS, backups, retention rules, access logs, and role permissions before production use.
+- Review applicable employment, location-data, and privacy requirements before enabling geofenced attendance.
+
+## Additional documentation
+
+- [`MIGRATION_NOTES.md`](MIGRATION_NOTES.md) — migration notes
+- [`ATLAS_STEP_BY_STEP.md`](ATLAS_STEP_BY_STEP.md) — MongoDB Atlas guidance
+- [`SCREENSHOTS.md`](SCREENSHOTS.md) — UI screenshots/reference
+- [`TESTS_REPORT.md`](TESTS_REPORT.md) — existing test summary
+
+## License
+
+No license file is currently included. Add a `LICENSE` before publishing if you intend others to use, modify, or redistribute this project.
